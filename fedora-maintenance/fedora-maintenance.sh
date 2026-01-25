@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-LOG_FILE="/var/log/fedora-hygiene.log"
-KEEP_KERNELS="${KEEP_KERNELS:-3}"   # override: KEEP_KERNELS=2 ./fedora-hygiene.sh monthly
+LOG_FILE="/var/log/fedora-maintenance.log"
+KEEP_KERNELS="${KEEP_KERNELS:-3}"   # override: KEEP_KERNELS=2 ./fedora-maintenance.sh monthly
 LOG_DAYS="${LOG_DAYS:-30}"          # keep rotated logs for N days (0 disables cleanup)
+JOURNAL_DAYS="${JOURNAL_DAYS:-7}"   # journal retention in days (0 disables cleanup)
 NOTIFY_USER="${NOTIFY_USER:-}"      # desktop notification target username (optional)
 
 CURRENT_STEP=""
@@ -20,7 +21,7 @@ say() {
 
 step() {
   CURRENT_STEP="$1"
-  say "• $CURRENT_STEP"
+  say "- $CURRENT_STEP"
   log "STEP: $CURRENT_STEP"
 }
 
@@ -81,8 +82,8 @@ notify_user() {
     DISPLAY="$display" \
     WAYLAND_DISPLAY="$wayland" \
     runuser -u "$NOTIFY_USER" -- "$notify_cmd" -u "$urgency" -t "$timeout" -i "$icon" \
-      -a "Fedora Hygiene" \
-      "Fedora hygiene" "$message"; then
+      -a "Fedora Maintenance" \
+      "Fedora maintenance" "$message"; then
     log "notification sent to ${NOTIFY_USER}: ${message}"
   else
     if XDG_RUNTIME_DIR="$runtime" \
@@ -91,8 +92,8 @@ notify_user() {
       WAYLAND_DISPLAY="$wayland" \
       sudo --preserve-env=DBUS_SESSION_BUS_ADDRESS,XDG_RUNTIME_DIR,DISPLAY,WAYLAND_DISPLAY \
         -u "$NOTIFY_USER" "$notify_cmd" -u "$urgency" -t "$timeout" -i "$icon" \
-          -a "Fedora Hygiene" \
-          "Fedora hygiene" "$message"; then
+          -a "Fedora Maintenance" \
+          "Fedora maintenance" "$message"; then
       log "notification sent to ${NOTIFY_USER}: ${message}"
     else
       log "notification failed for ${NOTIFY_USER}: ${message}"
@@ -139,6 +140,17 @@ dnf_update_daily() {
   run_cmd_required "DNF upgrade (refresh)" dnf -y upgrade --refresh
 }
 
+flatpak_update() {
+  if command_exists flatpak; then
+    run_cmd_optional "Flatpak update" flatpak -y update
+    run_cmd_optional "Flatpak uninstall unused" flatpak -y uninstall --unused
+  else
+    step "Flatpak maintenance"
+    say "  SKIP (flatpak not found)"
+    log "flatpak not found; skipping flatpak maintenance"
+  fi
+}
+
 firmware_update_monthly() {
   if command_exists fwupdmgr; then
     run_cmd_optional "Firmware refresh" fwupdmgr refresh --force
@@ -159,6 +171,15 @@ cleanup_system() {
 
   # Optional: clear user cache for root (harmless)
   run_cmd_optional "Clean root cache" rm -rf /root/.cache/* 2>/dev/null
+
+  if [[ "$JOURNAL_DAYS" -gt 0 ]] && command_exists journalctl; then
+    run_cmd_optional "Journal cleanup (keep ${JOURNAL_DAYS}d)" \
+      journalctl --vacuum-time="${JOURNAL_DAYS}d"
+  else
+    step "Journal cleanup"
+    say "  SKIP (disabled or journalctl not found)"
+    log "journal cleanup skipped"
+  fi
 
   # Remove old kernels (keep last N) safely using repoquery if available
   if command_exists dnf; then
@@ -193,7 +214,7 @@ cleanup_system() {
 }
 
 maybe_reboot_hint() {
-  # We won't force reboot automatically, but we'll detect if it’s likely needed.
+  # We won't force reboot automatically, but we'll detect if it's likely needed.
   local needs_cmd=""
   if command_exists needs-restarting; then
     needs_cmd="needs-restarting"
@@ -268,7 +289,7 @@ manage_logs() {
 
 usage() {
   cat <<EOF
-Fedora Hygiene Script
+Fedora Maintenance Script
 
 Usage:
   sudo $0 daily
@@ -276,13 +297,15 @@ Usage:
   sudo $0 major
 
 Modes:
-  daily   - dnf upgrade --refresh + cleanup
+  daily   - dnf upgrade --refresh + flatpak + cleanup
   monthly - daily + firmware updates (fwupdmgr) + cleanup
   major   - major Fedora version upgrade (assumes next version) + cleanup beforehand
 
 Env vars:
   KEEP_KERNELS=3    How many kernels to keep when pruning old ones (default: 3)
   LOG_DAYS=30       How many days to keep rotated logs (0 disables cleanup)
+  JOURNAL_DAYS=7    Journal retention in days (0 disables cleanup)
+  NOTIFY_USER=you   Desktop notification target (optional)
 
 Log:
   $LOG_FILE
@@ -299,25 +322,28 @@ main() {
   manage_logs
   trap on_exit EXIT
 
-  say "Fedora hygiene: mode=${mode}"
+  say "Fedora maintenance: mode=${mode}"
   log "========== START: mode=${mode} =========="
   log "Host: $(hostname) | Fedora: $(cat /etc/fedora-release 2>/dev/null || true) | Kernel: $(uname -r)"
 
   case "$mode" in
     daily)
       dnf_update_daily
+      flatpak_update
       cleanup_system
       maybe_reboot_hint
       ;;
     monthly)
       dnf_update_daily
       firmware_update_monthly
+      flatpak_update
       cleanup_system
       maybe_reboot_hint
       ;;
     major)
       # Do a normal update + cleanup first, then upgrade.
       dnf_update_daily
+      flatpak_update
       cleanup_system
       major_version_upgrade
       ;;
