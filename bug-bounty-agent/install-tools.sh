@@ -69,6 +69,35 @@ else
   warn "  go install -v github.com/owasp-amass/amass/v4/...@master"
 fi
 
+# ── PoC tools ────────────────────────────────────────────────────────────────
+say "dalfox (XSS PoC scanner)"
+if command -v dalfox &>/dev/null; then skip dalfox
+else go install -v github.com/hahwul/dalfox/v2@latest && ok dalfox
+fi
+
+say "ffuf (fuzzer — parameter/directory discovery)"
+if command -v ffuf &>/dev/null; then skip ffuf
+else go install -v github.com/ffuf/ffuf/v2@latest && ok ffuf
+fi
+
+say "interactsh-client (OOB callbacks for SSRF/RCE PoC)"
+if command -v interactsh-client &>/dev/null; then skip interactsh-client
+else go install -v github.com/projectdiscovery/interactsh/cmd/interactsh-client@latest && ok interactsh-client
+fi
+
+say "sqlmap (SQLi PoC — banner extraction only)"
+if command -v sqlmap &>/dev/null; then skip sqlmap
+else
+  # Try dnf first, fall back to pip
+  if sudo dnf install -y sqlmap 2>/dev/null; then
+    ok sqlmap
+  elif pip3 install --user sqlmap 2>/dev/null; then
+    ok "sqlmap (via pip)"
+  else
+    warn "sqlmap install failed — try: pip3 install --user sqlmap"
+  fi
+fi
+
 # ── Nuclei templates ─────────────────────────────────────────────────────────
 say "Nuclei templates"
 if command -v nuclei &>/dev/null; then
@@ -94,7 +123,7 @@ fi
 # ── Summary ──────────────────────────────────────────────────────────────────
 printf '\n'
 say "Tool availability summary"
-for t in subfinder httpx nuclei katana gau nmap amass ollama; do
+for t in subfinder httpx nuclei katana gau nmap amass dalfox ffuf interactsh-client sqlmap ollama; do
   if command -v "$t" &>/dev/null; then printf '  %-12s INSTALLED\n' "$t"
   else printf '  %-12s MISSING\n' "$t"; fi
 done
