@@ -1,44 +1,62 @@
-# Bug Bounty Scope Configuration
+# Bug Bounty Scope Configuration v2
 # Copy to scope.yaml and fill in your program details.
-# The orchestrator refuses to probe any target not explicitly listed here.
+# Every network call in the orchestrator is gated against this file.
 
 program:
   name: "Example Corp Bug Bounty"
   platform: "intigriti"          # intigriti | bugcrowd
   policy_url: "https://app.intigriti.com/programs/examplecorp/..."
-  notes: "Avoid scanning between 09:00-18:00 CET (business hours)"
+  notes: "Avoid scanning 09:00-18:00 CET. No automated testing on /payment/*"
 
 in_scope:
   domains:
-    - "*.example.com"            # wildcard matches sub.example.com, not example.com itself
+    - "*.example.com"
     - "example.com"
     - "api.example.com"
-  ip_ranges: []                  # e.g. ["1.2.3.0/24"] — leave empty if none
+  ip_ranges: []                  # e.g. ["1.2.3.0/24"]
   exclude:
-    - "staging.example.com"      # explicitly excluded by program policy
+    - "staging.example.com"
     - "legacy.example.com"
-    - "mail.example.com"         # mail servers are almost always excluded
+    - "mail.example.com"
 
 rate_limit:
-  requests_per_second: 5         # keep low — be a good citizen
+  requests_per_second: 5
   nuclei_rate: 20                # nuclei -rate-limit
-  nmap_timing: 3                 # nmap -T3 (normal). Never use T4/T5 against BB targets.
-  delay_between_hosts: 2         # seconds between switching targets
+  nmap_timing: 3                 # nmap -T3. Never T4/T5.
+  delay_between_hosts: 2         # seconds between target switches
 
 scan:
   nuclei_templates:
-    - "exposures"                # accidentally exposed files/data
-    - "misconfiguration"         # security misconfigurations
-    - "vulnerabilities"          # known vuln patterns
-    - "technologies"             # tech fingerprinting (info only)
-  nuclei_severity:               # only flag these
+    - "exposures"
+    - "misconfiguration"
+    - "vulnerabilities"
+    - "technologies"             # fingerprint — helps identify interesting tech
+  nuclei_severity:
     - "critical"
     - "high"
     - "medium"
-  skip_tools: []                 # tool names to skip if you don't want them: [nmap, gau]
   nmap_ports: "80,443,8080,8443,8888,3000,5000,9000,9200,6379,27017"
+  ffuf_wordlist: ""              # path to param wordlist — leave empty for built-in
+  skip_tools: []                 # tool names to skip: [nmap, gau, gowitness]
+
+# Test accounts for IDOR testing — create these yourself on the target platform.
+# The orchestrator uses account A's session to get resource IDs, then tests
+# if account B can access them. No real user data is ever accessed.
+test_accounts:
+  auth:
+    login_url: ""                # e.g. "https://app.example.com/api/auth/login"
+    body: '{"email":"{u}","password":"{p}"}'   # {u} and {p} are substituted
+    token_path: "$.data.token"   # dot-notation path to extract token from login response
+    token_header: "Authorization"
+    token_prefix: "Bearer "
+  accounts:
+    - username: ""               # testuser1@example.com
+      password: ""
+      note: "Account A — created via /register"
+    - username: ""               # testuser2@example.com
+      password: ""
+      note: "Account B — used to test IDOR against A's resources"
 
 output:
   directory: "./output"
-  notify_ntfy_topic: ""          # e.g. "my-bb-alerts" — ntfy.sh push notification
-  notify_email: ""               # SMTP notification (requires local MTA)
+  notify_ntfy_topic: ""          # ntfy.sh topic for push notification when done
