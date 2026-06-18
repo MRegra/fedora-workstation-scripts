@@ -10,8 +10,12 @@ warn() { printf '  WARN: %s\n' "$1"; }
 
 # ── Python deps ──────────────────────────────────────────────────────────────
 say "Python dependencies"
-pip3 install --user anthropic requests pyyaml
-ok "anthropic, requests, pyyaml"
+pip3 install --user anthropic requests pyyaml playwright
+ok "anthropic, requests, pyyaml, playwright"
+
+say "Playwright browser (Chromium)"
+python3 -m playwright install chromium
+ok "Chromium installed"
 
 # ── Go toolchain (needed for subfinder, httpx, nuclei, gau, katana) ─────────
 say "Go toolchain"

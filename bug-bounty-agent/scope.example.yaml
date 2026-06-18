@@ -57,6 +57,14 @@ test_accounts:
       password: ""
       note: "Account B — used to test IDOR against A's resources"
 
+browser:
+  modes:
+    - "discovery"                # map all pages, API calls, find attack surface
+    - "idor"                     # two-session IDOR testing (requires test_accounts)
+    - "logic"                    # business logic: pricing, roles, step skipping
+    - "auth"                     # login flows, OAuth, password reset, sessions
+  max_hosts: 10                  # max live hosts to run browser agent against per run
+
 output:
   directory: "./output"
   notify_ntfy_topic: ""          # ntfy.sh topic for push notification when done

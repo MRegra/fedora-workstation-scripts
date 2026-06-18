@@ -1257,6 +1257,101 @@ def _poc_secret(finding: dict, scope: dict, log: logging.Logger) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Phase: Browser (AI-driven Playwright testing)
+# ---------------------------------------------------------------------------
+
+def phase_browser(scope: dict, state: dict, output_dir: Path, log: logging.Logger, dry_run: bool) -> None:
+    """
+    Run autonomous Claude+Playwright browser sessions against live hosts.
+    Claude navigates the app and finds: IDOR, auth bypass, stored XSS,
+    business logic, privilege escalation — vulnerabilities scanners miss.
+
+    Runs modes from scope.yaml browser.modes (default: discovery,idor).
+    Findings are added to triaged_findings with poc_status=confirmed.
+    """
+    log.info("=== PHASE: BROWSER ===")
+    try:
+        from playwright.async_api import async_playwright  # noqa: F401
+        import anthropic as _anthropic  # noqa: F401
+    except ImportError:
+        log.warning("Skipping browser phase: pip3 install playwright anthropic && playwright install chromium")
+        return
+
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not api_key:
+        log.warning("ANTHROPIC_API_KEY not set — skipping browser phase")
+        return
+
+    live = state.get("live_hosts", [])
+    targets = [
+        (h.get("url", h) if isinstance(h, dict) else h)
+        for h in live[:20]
+        if is_in_scope(h.get("url", h) if isinstance(h, dict) else h, scope)
+    ]
+    if not targets:
+        log.warning("No live targets for browser phase — run recon first")
+        return
+
+    browser_cfg = scope.get("browser", {})
+    modes = browser_cfg.get("modes", ["discovery", "idor"])
+    max_hosts = browser_cfg.get("max_hosts", 10)
+    targets = targets[:max_hosts]
+
+    if dry_run:
+        log.info("[DRY-RUN] Browser agent would test %d hosts × modes %s", len(targets), modes)
+        return
+
+    # Write a temp state file for browser_agent.py
+    state_path = output_dir / "state.json"
+    _save_state(state, output_dir)
+
+    # Run browser_agent.py as subprocess — keeps it isolated (own event loop)
+    import subprocess as _sp
+    import sys as _sys
+    scope_path = output_dir / "_scope_for_browser.yaml"
+    import yaml as _yaml
+    with open(scope_path, "w") as f:
+        _yaml.dump(scope, f)
+
+    all_browser_findings: list[dict] = []
+    for host in targets:
+        for mode in modes:
+            log.info("Browser agent: %s [%s]", host, mode)
+            try:
+                result = _sp.run([
+                    _sys.executable,
+                    str(Path(__file__).parent / "browser_agent.py"),
+                    "--scope", str(scope_path),
+                    "--url", host,
+                    "--mode", mode,
+                ], capture_output=True, text=True, timeout=600,
+                    env={**os.environ, "ANTHROPIC_API_KEY": api_key})
+                if result.returncode != 0:
+                    log.warning("Browser agent error: %s", result.stderr[:300])
+            except Exception as exc:
+                log.warning("Browser agent failed for %s [%s]: %s", host, mode, exc)
+
+    # Load findings from browser_agent output files
+    for findings_file in sorted((output_dir).glob("browser_findings_*.json")):
+        try:
+            batch = json.loads(findings_file.read_text())
+            all_browser_findings.extend(batch)
+            log.info("Loaded %d browser findings from %s", len(batch), findings_file.name)
+        except Exception:
+            pass
+
+    if all_browser_findings:
+        # Merge with existing triaged findings
+        existing = state.get("triaged_findings", [])
+        merged = existing + all_browser_findings
+        state["triaged_findings"] = merged
+        log.info("Browser phase: %d new finding(s) → %d total", len(all_browser_findings), len(merged))
+        _save_state(state, output_dir)
+    else:
+        log.info("Browser phase: no findings reported by agent")
+
+
+# ---------------------------------------------------------------------------
 # Phase: PoC
 # ---------------------------------------------------------------------------
 
@@ -1426,7 +1521,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Bug bounty orchestrator v2")
     parser.add_argument("--scope", required=True)
     parser.add_argument("--phase",
-                        choices=["recon", "scan", "poc", "report", "all"],
+                        choices=["recon", "scan", "browser", "poc", "report", "all"],
                         default="all")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--fresh", action="store_true", help="Ignore saved state")
@@ -1451,6 +1546,8 @@ def main() -> None:
             phase_recon(scope, state, output_dir, log, args.dry_run)
         if args.phase in ("scan", "all"):
             phase_scan(scope, state, output_dir, log, args.dry_run)
+        if args.phase in ("browser", "all"):
+            phase_browser(scope, state, output_dir, log, args.dry_run)
         if args.phase in ("poc", "all"):
             phase_poc(scope, state, output_dir, log, args.dry_run)
         if args.phase in ("report", "all"):
