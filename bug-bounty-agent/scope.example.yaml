@@ -1,0 +1,44 @@
+# Bug Bounty Scope Configuration
+# Copy to scope.yaml and fill in your program details.
+# The orchestrator refuses to probe any target not explicitly listed here.
+
+program:
+  name: "Example Corp Bug Bounty"
+  platform: "intigriti"          # intigriti | bugcrowd
+  policy_url: "https://app.intigriti.com/programs/examplecorp/..."
+  notes: "Avoid scanning between 09:00-18:00 CET (business hours)"
+
+in_scope:
+  domains:
+    - "*.example.com"            # wildcard matches sub.example.com, not example.com itself
+    - "example.com"
+    - "api.example.com"
+  ip_ranges: []                  # e.g. ["1.2.3.0/24"] — leave empty if none
+  exclude:
+    - "staging.example.com"      # explicitly excluded by program policy
+    - "legacy.example.com"
+    - "mail.example.com"         # mail servers are almost always excluded
+
+rate_limit:
+  requests_per_second: 5         # keep low — be a good citizen
+  nuclei_rate: 20                # nuclei -rate-limit
+  nmap_timing: 3                 # nmap -T3 (normal). Never use T4/T5 against BB targets.
+  delay_between_hosts: 2         # seconds between switching targets
+
+scan:
+  nuclei_templates:
+    - "exposures"                # accidentally exposed files/data
+    - "misconfiguration"         # security misconfigurations
+    - "vulnerabilities"          # known vuln patterns
+    - "technologies"             # tech fingerprinting (info only)
+  nuclei_severity:               # only flag these
+    - "critical"
+    - "high"
+    - "medium"
+  skip_tools: []                 # tool names to skip if you don't want them: [nmap, gau]
+  nmap_ports: "80,443,8080,8443,8888,3000,5000,9000,9200,6379,27017"
+
+output:
+  directory: "./output"
+  notify_ntfy_topic: ""          # e.g. "my-bb-alerts" — ntfy.sh push notification
+  notify_email: ""               # SMTP notification (requires local MTA)
