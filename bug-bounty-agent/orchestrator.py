@@ -1520,12 +1520,14 @@ def _load_state(output_dir: Path) -> dict:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Bug bounty orchestrator v2")
     parser.add_argument("--scope", required=True)
-    parser.add_argument("--phase",
+    parser.add_argument("--phases", nargs="+",
                         choices=["recon", "scan", "browser", "poc", "report", "all"],
-                        default="all")
+                        default=["all"], dest="phases")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--fresh", action="store_true", help="Ignore saved state")
     args = parser.parse_args()
+    run_all = "all" in args.phases
+    run_phases = set(args.phases)
 
     scope_path = Path(args.scope)
     if not scope_path.exists():
@@ -1540,21 +1542,37 @@ def main() -> None:
     log.info("Program: %s | Platform: %s", scope["program"]["name"], scope["program"]["platform"])
     log.info("Scope: %s", scope["in_scope"]["domains"])
 
+    # Load program memory and inject context into scope for downstream prompts
+    import memory as _mem
+    _memory_dir = Path("memory")
+    program_memory = _mem.load(scope["program"]["name"], _memory_dir)
+    scope["_memory_context"] = _mem.format_context(program_memory)
+    if program_memory.get("run_count"):
+        log.info("Memory: %d prior runs, %d submitted findings, %d lessons",
+                 program_memory["run_count"],
+                 len(program_memory.get("submitted", [])),
+                 len(program_memory.get("lessons", [])))
+
     state = {} if args.fresh else _load_state(output_dir)
     try:
-        if args.phase in ("recon", "all"):
+        if run_all or "recon" in run_phases:
             phase_recon(scope, state, output_dir, log, args.dry_run)
-        if args.phase in ("scan", "all"):
+        if run_all or "scan" in run_phases:
             phase_scan(scope, state, output_dir, log, args.dry_run)
-        if args.phase in ("browser", "all"):
+        if run_all or "browser" in run_phases:
             phase_browser(scope, state, output_dir, log, args.dry_run)
-        if args.phase in ("poc", "all"):
+        if run_all or "poc" in run_phases:
             phase_poc(scope, state, output_dir, log, args.dry_run)
-        if args.phase in ("report", "all"):
+        if run_all or "report" in run_phases:
             phase_report(scope, state, output_dir, log, args.dry_run)
+        log.info("=== DONE — updating program memory ===")
+        if not args.dry_run:
+            updated_memory = _mem.update_from_run(program_memory, state, scope, log)
+            _mem.save(scope["program"]["name"], updated_memory, _memory_dir)
+            log.info("Memory saved: %s", _memory_dir / f"{scope['program']['name']}.json")
         log.info("=== DONE ===")
     except KeyboardInterrupt:
-        log.info("Interrupted — state saved, resume with --phase")
+        log.info("Interrupted — state saved, resume with --phases")
         _save_state(state, output_dir)
     except Exception as exc:
         log.exception("Fatal: %s", exc)
