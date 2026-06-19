@@ -1,0 +1,70 @@
+# Bug Bounty Scope Configuration v2
+# Copy to scope.yaml and fill in your program details.
+# Every network call in the orchestrator is gated against this file.
+
+program:
+  name: "Example Corp Bug Bounty"
+  platform: "intigriti"          # intigriti | bugcrowd
+  policy_url: "https://app.intigriti.com/programs/examplecorp/..."
+  notes: "Avoid scanning 09:00-18:00 CET. No automated testing on /payment/*"
+
+in_scope:
+  domains:
+    - "*.example.com"
+    - "example.com"
+    - "api.example.com"
+  ip_ranges: []                  # e.g. ["1.2.3.0/24"]
+  exclude:
+    - "staging.example.com"
+    - "legacy.example.com"
+    - "mail.example.com"
+
+rate_limit:
+  requests_per_second: 5
+  nuclei_rate: 20                # nuclei -rate-limit
+  nmap_timing: 3                 # nmap -T3. Never T4/T5.
+  delay_between_hosts: 2         # seconds between target switches
+
+scan:
+  nuclei_templates:
+    - "exposures"
+    - "misconfiguration"
+    - "vulnerabilities"
+    - "technologies"             # fingerprint — helps identify interesting tech
+  nuclei_severity:
+    - "critical"
+    - "high"
+    - "medium"
+  nmap_ports: "80,443,8080,8443,8888,3000,5000,9000,9200,6379,27017"
+  ffuf_wordlist: ""              # path to param wordlist — leave empty for built-in
+  skip_tools: []                 # tool names to skip: [nmap, gau, gowitness]
+
+# Test accounts for IDOR testing — create these yourself on the target platform.
+# The orchestrator uses account A's session to get resource IDs, then tests
+# if account B can access them. No real user data is ever accessed.
+test_accounts:
+  auth:
+    login_url: ""                # e.g. "https://app.example.com/api/auth/login"
+    body: '{"email":"{u}","password":"{p}"}'   # {u} and {p} are substituted
+    token_path: "$.data.token"   # dot-notation path to extract token from login response
+    token_header: "Authorization"
+    token_prefix: "Bearer "
+  accounts:
+    - username: ""               # testuser1@example.com
+      password: ""
+      note: "Account A — created via /register"
+    - username: ""               # testuser2@example.com
+      password: ""
+      note: "Account B — used to test IDOR against A's resources"
+
+browser:
+  modes:
+    - "discovery"                # map all pages, API calls, find attack surface
+    - "idor"                     # two-session IDOR testing (requires test_accounts)
+    - "logic"                    # business logic: pricing, roles, step skipping
+    - "auth"                     # login flows, OAuth, password reset, sessions
+  max_hosts: 10                  # max live hosts to run browser agent against per run
+
+output:
+  directory: "./output"
+  notify_ntfy_topic: ""          # ntfy.sh topic for push notification when done
