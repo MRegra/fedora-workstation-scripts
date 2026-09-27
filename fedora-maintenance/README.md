@@ -74,11 +74,11 @@ Create these files under `~/.config/systemd/user`.
 
 ```ini
 [Unit]
-Description=Fedora maintenance (%i)
+Description=Fedora maintenance (daily)
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/sudo -n /usr/local/bin/fedora-maintenance %i
+ExecStart=/usr/bin/sudo -n /usr/local/bin/fedora-maintenance daily
 Environment=NOTIFY_USER=mregra
 ```
 
@@ -105,6 +105,9 @@ systemctl --user enable --now fedora-maintenance.timer
 
 If you use the user timers, make sure `sudo` is configured for passwordless
 execution of the maintenance script (or it will prompt and fail in the background).
+Always pass a mode in `ExecStart`: without one the script prints usage and exits 1.
+`%i` only works in a template unit (`fedora-maintenance@.service`, Option B); in
+`fedora-maintenance.service` it expands to an empty string.
 
 ### Option B: systemd system timers
 

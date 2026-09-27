@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Modes accepted by main(); scripts/test-smoke.sh checks README ExecStart lines against it.
+# smoke-modes: daily monthly major
 set -Eeuo pipefail
 
 LOG_FILE="/var/log/fedora-maintenance.log"
