@@ -3,6 +3,19 @@
 # Run as your normal user (not root) — tools install to ~/go/bin and ~/.local/bin.
 set -Eeuo pipefail
 
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  cat <<'EOF'
+install-tools.sh — install security tooling for the bug-bounty orchestrator.
+
+Usage:
+  bash install-tools.sh          Install Python deps, Go tools, nmap, sqlmap, etc.
+  bash install-tools.sh --help   Show this help and exit.
+
+Run as your normal user (not root). Tools install to ~/go/bin and ~/.local/bin.
+EOF
+  exit 0
+fi
+
 say()  { printf '\n=== %s ===\n' "$1"; }
 ok()   { printf '  OK: %s\n' "$1"; }
 skip() { printf '  SKIP: %s (already installed)\n' "$1"; }

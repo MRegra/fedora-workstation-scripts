@@ -198,6 +198,8 @@ cleanup_system() {
         say "  OK (nothing to remove)"
         log "No old kernels to remove"
       else
+        # shellcheck disable=SC2086  # intentional word splitting: a space/newline
+        # separated list of kernel package names must expand to multiple args.
         if dnf -y remove $old_kernels >>"$LOG_FILE" 2>&1; then
           ok
         else
@@ -315,6 +317,11 @@ EOF
 main() {
   local mode="${1:-}"
   [[ -n "$mode" ]] || { usage; exit 1; }
+
+  if [[ "$mode" == "-h" || "$mode" == "--help" || "$mode" == "help" ]]; then
+    usage
+    exit 0
+  fi
 
   MODE="$mode"
   need_root "$@"

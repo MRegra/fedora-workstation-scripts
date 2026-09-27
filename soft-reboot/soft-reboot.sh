@@ -19,6 +19,23 @@ CURRENT_STEP=""
 
 command_exists() { command -v "$1" >/dev/null 2>&1; }
 
+usage() {
+  cat <<'EOF'
+soft-reboot.sh — replicate common reboot cleanup effects without rebooting.
+
+Usage:
+  sudo ./soft-reboot.sh        Flush buffers, drop caches, compact swap, restart
+                               stale services, clean /tmp, report reboot status.
+  ./soft-reboot.sh --help      Show this help and exit.
+
+Env vars:
+  TMP_AGE_DAYS=7    Remove stale /tmp files older than N days.
+  COMPACT_SWAP=auto auto|yes|no — auto only compacts if swap > 20% used.
+  DROP_CACHES=1     1=page cache, 2=dentries+inodes, 3=all (1 is safest).
+  NOTIFY_USER=you   Desktop notification target (optional).
+EOF
+}
+
 need_root() {
   [[ "${EUID:-$(id -u)}" -eq 0 ]] || { say "Run as root: sudo $0"; exit 1; }
 }
@@ -206,6 +223,11 @@ reboot_still_needed() {
 }
 
 main() {
+  if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+    usage
+    exit 0
+  fi
+
   need_root
   mkdir -p "$(dirname "$LOG_FILE")"
   touch "$LOG_FILE"
