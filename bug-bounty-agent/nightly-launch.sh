@@ -9,9 +9,23 @@
 # Output and logs go to ./output/ and ./nightly.log
 set -Eeuo pipefail
 
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  cat <<'EOF'
+nightly-launch.sh — queue tonight's orchestrator run and detach it.
+
+Usage:
+  bash nightly-launch.sh scope.yaml
+  bash nightly-launch.sh scope.yaml --phases recon scan
+  bash nightly-launch.sh --help
+
+Output and logs go to ./output/ and ./nightly.log; PID is written to nightly.pid.
+EOF
+  exit 0
+fi
+
 SCOPE="${1:-scope.yaml}"
 shift || true
-EXTRA_ARGS="${*}"
+EXTRA_ARGS=("$@")
 LOG="nightly.log"
 PID_FILE="nightly.pid"
 
@@ -32,11 +46,11 @@ if [[ -f "$PID_FILE" ]]; then
   rm -f "$PID_FILE"
 fi
 
-echo "Starting overnight run: scope=$SCOPE extra=${EXTRA_ARGS:-none}"
+echo "Starting overnight run: scope=$SCOPE extra=${EXTRA_ARGS[*]:-none}"
 echo "Log: $LOG"
 echo "Kill with: kill \$(cat $PID_FILE)"
 
-nohup python3 orchestrator.py --scope "$SCOPE" $EXTRA_ARGS \
+nohup python3 orchestrator.py --scope "$SCOPE" "${EXTRA_ARGS[@]}" \
   > "$LOG" 2>&1 &
 
 echo $! > "$PID_FILE"

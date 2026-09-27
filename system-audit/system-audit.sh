@@ -35,7 +35,7 @@ PASS_COUNT=0
 RED="\033[0;31m"; YEL="\033[0;33m"; GRN="\033[0;32m"
 CYN="\033[0;36m"; BLD="\033[1m"; RST="\033[0m"
 
-_color() { [[ -t 1 ]] && printf '%b' "$1" || true; }
+_color() { if [[ -t 1 ]]; then printf '%b' "$1"; fi; }
 
 _log_plain() { echo "$1" >>"$LOG_FILE"; }
 
@@ -402,6 +402,8 @@ sec_suspicious_procs() {
   # Processes with suspicious command lines (base64, curl piped to bash, etc.)
   if $IS_ROOT; then
     local suspicious_cmds
+    # shellcheck disable=SC2009  # need full `ps aux` command-line text to regex-match
+    # attack patterns (pipes, redirects); pgrep matches process names only.
     suspicious_cmds="$(ps aux 2>/dev/null \
       | grep -E 'base64.*decode|curl.*[|].*bash|wget.*[|].*bash|bash.*-i.*>&|/dev/tcp|/dev/shm' \
       | grep -v grep || true)"
@@ -688,7 +690,25 @@ summary() {
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
+print_usage() {
+  cat <<'EOF'
+system-audit.sh — read-only system performance and security audit.
+
+Usage:
+  ./system-audit.sh                 Run the audit (diffs against a saved baseline).
+  ./system-audit.sh --save-baseline Run the audit, then save current state as the baseline.
+  ./system-audit.sh --help          Show this help and exit.
+
+Runs as either root (full scan) or an unprivileged user (reduced scan).
+EOF
+}
+
 main() {
+  if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+    print_usage
+    exit 0
+  fi
+
   mkdir -p "$LOG_DIR"
   touch "$LOG_FILE"
   _log_plain "SYSTEM AUDIT — $(date) — host: $(hostname)"

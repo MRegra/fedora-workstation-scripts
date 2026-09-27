@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Modes accepted by main(); scripts/test-smoke.sh checks README ExecStart lines against it.
+# smoke-modes: daily monthly major
 set -Eeuo pipefail
 
 LOG_FILE="/var/log/fedora-maintenance.log"
@@ -198,6 +200,8 @@ cleanup_system() {
         say "  OK (nothing to remove)"
         log "No old kernels to remove"
       else
+        # shellcheck disable=SC2086  # intentional word splitting: a space/newline
+        # separated list of kernel package names must expand to multiple args.
         if dnf -y remove $old_kernels >>"$LOG_FILE" 2>&1; then
           ok
         else
@@ -315,6 +319,11 @@ EOF
 main() {
   local mode="${1:-}"
   [[ -n "$mode" ]] || { usage; exit 1; }
+
+  if [[ "$mode" == "-h" || "$mode" == "--help" || "$mode" == "help" ]]; then
+    usage
+    exit 0
+  fi
 
   MODE="$mode"
   need_root "$@"
