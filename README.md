@@ -30,18 +30,26 @@ Then follow the per-project READMEs for configuration and automation details.
 
 ## Continuous integration
 
-Every push and pull request runs `.github/workflows/ci.yml`:
+Every push to `main` and every pull request runs `.github/workflows/ci.yml`:
 
-- **shellcheck** — static analysis of every `*.sh`.
+- **shellcheck** — static analysis of every `*.sh` (the runner's shellcheck is
+  older than Fedora's and a little stricter; the version is printed in the log).
+- **actionlint** — lints the workflow files.
 - **gitleaks** — scans for committed secrets.
 - **script smoke test** — `bash -n` on every script plus `scripts/test-smoke.sh`,
-  which runs each entrypoint with `--help` (no `sudo`, no side effects) and
-  asserts it exists and is runnable. This guards against the class of failure
-  where a moved or renamed script breaks a systemd unit's `ExecStart`
-  (`status=203/EXEC`).
+  which guards against the systemd `status=203/EXEC` failure (a moved, renamed
+  or non-executable script behind a unit's `ExecStart`). It reads the symlink
+  lines and `ExecStart=` lines from the READMEs and fails if a symlinked script
+  is missing, has no shebang or is not committed as executable (`100755`), or if
+  an `ExecStart` binary is not created by any README symlink. It also runs every
+  `*.sh` outside `scripts/` with `--help` (no `sudo`, no side effects).
+  `scripts/test-smoke-selftest.sh` proves the smoke test goes red on each of
+  those failures.
 
-Every runnable script therefore supports `--help`. Run the smoke test locally with:
+Every runnable script therefore supports `--help`. When you move a script,
+update its README symlink line in the same change. Run the checks locally with:
 
 ```bash
 bash scripts/test-smoke.sh
+bash scripts/test-smoke-selftest.sh
 ```

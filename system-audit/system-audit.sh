@@ -35,7 +35,7 @@ PASS_COUNT=0
 RED="\033[0;31m"; YEL="\033[0;33m"; GRN="\033[0;32m"
 CYN="\033[0;36m"; BLD="\033[1m"; RST="\033[0m"
 
-_color() { [[ -t 1 ]] && printf '%b' "$1" || true; }
+_color() { if [[ -t 1 ]]; then printf '%b' "$1"; fi; }
 
 _log_plain() { echo "$1" >>"$LOG_FILE"; }
 
