@@ -1,0 +1,6 @@
+self-hosted-runner:
+  # F-0704: CI runs on the home self-hosted runners (server-dev1, server-dev2),
+  # labels `self-hosted, Linux, X64, home`. Declare the custom `home` label so
+  # actionlint doesn't flag `runs-on: [self-hosted, home]` as unknown.
+  labels:
+    - home

@@ -30,12 +30,21 @@ Then follow the per-project READMEs for configuration and automation details.
 
 ## Continuous integration
 
-Every push to `main` and every pull request runs `.github/workflows/ci.yml`:
+CI runs on the owner's home self-hosted runners (`server-dev1`/`server-dev2`,
+labels `self-hosted, Linux, X64, home`) rather than GitHub-hosted runners — see
+[ADR 0001](docs/adr/0001-ci-on-home-self-hosted-runners.md). Every push to
+`main` and every pull request runs `.github/workflows/ci.yml`:
 
-- **shellcheck** — static analysis of every `*.sh` (the runner's shellcheck is
-  older than Fedora's and a little stricter; the version is printed in the log).
-- **actionlint** — lints the workflow files.
-- **gitleaks** — scans for committed secrets.
+- **shellcheck** — static analysis of every `*.sh`. Pinned to v0.9.0 (the
+  version Fedora/ubuntu-24.04 used to ship, stricter than newer releases on
+  SC2015); the tarball is downloaded and checked against a sha256 pinned in
+  the workflow before it's extracted and run.
+- **actionlint** — lints the workflow files (`go run …@v1.7.7`, checked
+  against the Go checksum database).
+- **gitleaks** — scans the full git history for committed secrets. Pinned to
+  v8.30.1; the tarball is downloaded and checked against a sha256 pinned in
+  the workflow (matching gitleaks' own published checksums file) before it's
+  extracted and run.
 - **script smoke test** — `bash -n` on every script plus `scripts/test-smoke.sh`,
   which guards against the ways `fedora-maintenance.service` failed (F-0024). It
   reads the `ln -s` lines and the `ExecStart=` lines from the READMEs and fails if:
