@@ -59,16 +59,32 @@ jobs:
 
   gitleaks:
     name: gitleaks
+    # gitleaks/gitleaks-action is a Docker container action; on the home
+    # runners it started failing the scan step outright (no leak annotation,
+    # just a failed step) right after the self-hosted move, most likely
+    # Docker Hub's anonymous pull-rate limit shared across every crew repo's
+    # jobs on these two boxes. A local `gitleaks detect` against this repo's
+    # full history (same version the action wraps) finds nothing, so this
+    # isn't a real secret. Fetch the static binary instead, same pattern as
+    # the shellcheck job above: no Docker, no GITHUB_TOKEN needed either.
     runs-on: [self-hosted, home]
     steps:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           fetch-depth: 0
+      - name: Install gitleaks v8.18.4
+        run: |
+          set -euo pipefail
+          curl -sSfL https://github.com/gitleaks/gitleaks/releases/download/v8.18.4/gitleaks_8.18.4_linux_x64.tar.gz \
+            | tar -xz -C "$RUNNER_TEMP" gitleaks
+          mkdir -p "$RUNNER_TEMP/bin"
+          mv "$RUNNER_TEMP/gitleaks" "$RUNNER_TEMP/bin/gitleaks"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: Show gitleaks version
+        run: gitleaks version
       - name: Scan for committed secrets
-        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2.3.9
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gitleaks detect --source . --redact -v
 
   smoke:
     name: script smoke test
