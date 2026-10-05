@@ -1,13 +1,20 @@
 # Fedora Workstation Scripts
 
-This repo contains small, focused scripts for maintaining a Fedora workstation.
-Each script lives in its own folder with a dedicated README that covers usage,
-install, and setup details.
+This repo contains small, focused scripts for maintaining a Fedora workstation,
+plus a bug-bounty automation pipeline and a local-LLM MCP server. Each project
+lives in its own folder; `fedora-maintenance/`, `system-health/` and
+`bug-bounty-agent/` have a dedicated README with usage, install and setup
+details. `soft-reboot/` and `system-audit/` are self-documenting via `--help`
+(see each script's header comment).
 
 ## Projects
 
 - `fedora-maintenance/`: system updates, cleanup, firmware, and major upgrades
 - `system-health/`: lightweight memory pressure warning
+- `soft-reboot/`: replicates common reboot cleanup effects without rebooting (`sudo soft-reboot/soft-reboot.sh`)
+- `system-audit/`: read-only security + performance audit with PASS/WARN/ALERT output and baseline diffing (`system-audit/system-audit.sh [--save-baseline]`)
+- `local-ai-agent/`: MCP server exposing a local Ollama LLM to Claude Code — see `local-ai-agent/prompt-ollama-agent.md`
+- `bug-bounty-agent/`: overnight AI pipeline (recon → scan → browser → PoC → report) for bug bounty hunting — see `bug-bounty-agent/README.md`
 
 ## Quick setup (symlinks)
 
@@ -73,3 +80,8 @@ locally with:
 bash scripts/test-smoke.sh
 bash scripts/test-smoke-selftest.sh
 ```
+
+## Operating the scripts
+
+See [`docs/runbook.md`](docs/runbook.md) for the service map, health checks
+and known failure modes (including the `203/EXEC` systemd failure, F-0024).

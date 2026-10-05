@@ -1,109 +1,85 @@
 # fedora-workstation-scripts
 
 Personal toolbox for a Fedora Linux power user + bug bounty hunter (Intigriti / Bugcrowd).
+Public repo; CI runs on the owner's home self-hosted runners.
 
 ## Repository structure
 
 ```
-soft-reboot/        — reboot-equivalent cleanup script (no actual reboot)
-system-audit/       — security + performance audit with PASS/WARN/ALERT output
-local-ai-agent/     — MCP server exposing local Ollama LLM to Claude Code
-bug-bounty-agent/   — overnight AI pipeline: recon → scan → browser → PoC → report
+fedora-maintenance/  — DNF updates, cleanup, firmware, major upgrades (sudo fedora-maintenance.sh daily|monthly|major)
+system-health/       — lightweight memory/swap pressure warning (system-health-check.sh)
+soft-reboot/         — replicates reboot cleanup effects without rebooting (sudo soft-reboot.sh)
+system-audit/        — read-only security + performance audit, PASS/WARN/ALERT, baseline diffing (system-audit.sh [--save-baseline])
+local-ai-agent/      — MCP server exposing a local Ollama LLM to Claude Code
+bug-bounty-agent/    — overnight AI pipeline: recon → scan → browser → PoC → report (see bug-bounty-agent/README.md)
+scripts/             — CI support: test-smoke.sh (F-0024 regression guard) and its self-test
+docs/adr/            — Architecture Decision Records
+.github/workflows/   — CI (ci.yml), self-hosted runner label config (actionlint.yaml)
 ```
 
-## Active development branch
+Each shell entrypoint (`fedora-maintenance.sh`, `system-health-check.sh`,
+`soft-reboot.sh`, `system-audit.sh`, `nightly-launch.sh`, `install-tools.sh`)
+supports `-h`/`--help`, printing usage and exiting 0 with no privileged or
+destructive work. `fedora-maintenance/` and `system-health/` have their own
+`README.md` with full setup/automation instructions; `soft-reboot.sh` and
+`system-audit.sh` are self-documenting via `--help`.
 
-`claude/fedora-repo-status-fyb549` — all new work goes here, PR #1 open.
+## CI (`.github/workflows/ci.yml`)
 
-## bug-bounty-agent — the main project
+Runs on `push` to `main` and on every `pull_request`, on the owner's home
+self-hosted runners (`runs-on: [self-hosted, home]` — see
+`docs/adr/0001-ci-on-home-self-hosted-runners.md`). Four jobs, all required
+checks:
 
-An overnight automation pipeline. Claude Opus orchestrates; Claude Haiku handles cheap navigation steps; Ollama (llama3.3:70b) runs local triage for free.
+- **shellcheck** — every `*.sh`, pinned to v0.9.0 (checksum-verified download).
+- **actionlint** — lints the workflow files (`go run …@v1.7.7`).
+- **gitleaks** — full-history secret scan, pinned to v8.30.1 (checksum-verified
+  download, invoked directly — not via `gitleaks-action`).
+- **script smoke test** (`scripts/test-smoke.sh` + `scripts/test-smoke-selftest.sh`)
+  — the **F-0024 regression guard**: fails if an entrypoint behind a README
+  symlink or a systemd `ExecStart=` is missing, non-executable, lacks a
+  shebang, or declares `--help`/`# smoke-modes:` but doesn't honor it. This is
+  the test suite for the shell scripts — run it locally with:
 
-### Key files
+  ```bash
+  bash scripts/test-smoke.sh
+  bash scripts/test-smoke-selftest.sh
+  ```
 
-| File | Purpose |
-|---|---|
-| `orchestrator.py` | Main pipeline — `python3 orchestrator.py --scope scope.yaml` |
-| `browser_agent.py` | Claude + Playwright agentic browser testing (4 modes) |
-| `playwright_mcp_server.py` | MCP server for direct Claude Code browser control |
-| `memory.py` | Per-program knowledge persistence across runs |
-| `morning-review.py` | Triage overnight findings, ranked by severity + PoC |
-| `polish-report.py` | Claude Opus rewrites draft reports for platform submission |
-| `pre-run-check.py` | Pre-flight validation before overnight launches |
-| `nightly-launch.sh` | Detach orchestrator to background with nohup |
-| `scope.example.yaml` | Full config template — copy to scope.yaml |
-| `daily-workflow.md` | Exact 60-minute daily routine for 3-5 reports/week |
-| `private-programs.md` | How to get private program invites (Intigriti / Bugcrowd) |
-| `ethical-guidelines.md` | Platform rules, prohibited actions, disclosure |
-| `install-tools.sh` | Install all security tools |
+The runners have Docker but **no passwordless sudo**: do not add steps that
+assume `apt`/`dnf install` will work without prompting. All GitHub Actions are
+pinned to full commit SHAs with a `# vX.Y` comment.
 
-### Daily workflow (1h/day, 3-5 reports/week)
+## Conventions
 
-```bash
-# Morning
-python3 morning-review.py --dir output/ --platform intigriti
-python3 polish-report.py --rank 1 --platform intigriti
-# Review + submit on platform
+- When you move or rename a script, update its README symlink line and any
+  systemd `ExecStart=` example in the same change — the smoke test enforces
+  this.
+- When you add a mode to `fedora-maintenance.sh`, add it to its
+  `# smoke-modes:` comment.
+- Shell scripts must pass `shellcheck` at default (style) severity; justify
+  any inline disable with a comment (see `SC2086`/`SC2009` in
+  `fedora-maintenance.sh`/`system-audit.sh` for examples).
 
-# Night
-python3 pre-run-check.py scope.yaml
-bash nightly-launch.sh scope.yaml
-```
+## Danger zones (bug-bounty-agent)
 
-### Run a single phase
+- `is_in_scope()` (in `orchestrator.py`) is called before every network
+  operation — never remove or bypass it; it is the only thing stopping the
+  overnight pipeline from touching out-of-scope hosts.
+- `sqlmap` is hardcoded to `--level=1 --risk=1 --technique=BT --banner` in the
+  PoC phase — never raise these to enable data exfiltration.
+- Browser agent (`browser_agent.py`) is capped at 40 steps per session and 3
+  sessions per host — do not remove these caps.
+- `scope.yaml` and `memory/*.json` hold program-specific bug bounty data
+  (targets, findings, submission status) — never commit real values; only
+  `scope.example.yaml` is tracked.
 
-```bash
-python3 orchestrator.py --scope scope.yaml --phases recon scan
-python3 orchestrator.py --scope scope.yaml --phases browser poc report
-```
+## Where tests live
 
-### Memory system
-
-Per-program knowledge accumulates in `memory/{program_name}.json`:
-- Previously submitted findings (prevents re-submission)
-- Auth patterns, rate limits, tech stack
-- Lessons extracted by Claude after each run
-
-View memory for a program:
-```bash
-python3 -c "import memory, json; print(json.dumps(memory.load('Program Name', __import__('pathlib').Path('memory')), indent=2))"
-```
-
-Record a submission outcome:
-```bash
-python3 -c "
-import memory; from pathlib import Path
-m = memory.load('Program Name', Path('memory'))
-m = memory.update_submission_status(m, 'IDOR /api/invoices', 'accepted', bounty=500)
-memory.save('Program Name', m, Path('memory'))
-"
-```
-
-## Safety constraints (never change these)
-
-- `is_in_scope()` is called before every network operation — removing it breaks the safety model
-- sqlmap is hardcoded to `--level=1 --risk=1 --technique=BT --banner` — no data exfiltration
-- Browser agent has a 40-step max per session and 3 session max per host
-
-## Cost
-
-~$120–130/month Claude API for 5 programs × 4 runs/week. Haiku for navigation, Opus for analysis and reports.
-
-## Local AI setup
-
-```bash
-# ~/.claude/mcp.json
-{
-  "mcpServers": {
-    "local-llm": {
-      "command": "python3",
-      "args": ["/home/user/fedora-workstation-scripts/local-ai-agent/mcp_server.py"]
-    },
-    "browser": {
-      "command": "python3",
-      "args": ["/home/user/fedora-workstation-scripts/bug-bounty-agent/playwright_mcp_server.py"],
-      "env": { "ALLOWED_DOMAINS": "example.com" }
-    }
-  }
-}
-```
+There is no application test suite — these are maintenance/automation
+scripts. The CI safety net is `scripts/test-smoke.sh` (smoke-tests every
+shell entrypoint's `--help` path and README/systemd wiring) plus
+`scripts/test-smoke-selftest.sh` (proves the smoke test itself goes red on
+each F-0024 failure mode). `shellcheck` and `gitleaks` run on every push/PR
+via CI (see above). The Python side (`bug-bounty-agent/`, `local-ai-agent/`)
+has no automated tests or lint job yet.
