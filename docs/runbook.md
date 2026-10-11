@@ -41,6 +41,28 @@ script on the workstation.
 | CI `shellcheck`/`actionlint`/`gitleaks` job goes red | Check the failing job in the Actions run | Fix the reported finding (shellcheck warning, workflow lint error, or committed secret — rotate the secret immediately if `gitleaks` finds a real one, then scrub history with the owner's help). | `.github/workflows/ci.yml` |
 | CI jobs don't start or stay queued | Check runner status: the jobs target `runs-on: [self-hosted, home]` (server-dev1/server-dev2) | Confirm the home runners are online (owner-operated hardware, not in this repo's control). | `docs/adr/0001-ci-on-home-self-hosted-runners.md`, F-0704 |
 
+## Known issues
+
+- **Locally installed units may still point at pre-reorg script paths.** The
+  scripts used to live flat at the repo root (`fedora-workstation-scripts/fedora-maintenance.sh`,
+  `.../system-health-check.sh`) and were moved into the `fedora-maintenance/`
+  and `system-health/` subdirectories. Any systemd unit created before that
+  move (or hand-written against an old README) still has
+  `ExecStart=.../fedora-workstation-scripts/fedora-maintenance.sh` (or the
+  `system-health-check.sh` equivalent) and fails with `status=203/EXEC` — this
+  was observed on the owner's workstation (both the `fedora-maintenance` and
+  `system-health` user units) as of 2026-09-13. The current README/unit
+  examples never hit this because they route through a stable
+  `/usr/local/bin/<name>` (or `~/.local/bin/<name>`) symlink instead of a
+  direct repo path (see `fedora-maintenance/README.md` and
+  `system-health/README.md` "Setup (symlinks)" + "Automation"). Fix: point
+  each unit's `ExecStart=` at the symlink, not the repo path, re-create the
+  symlink if missing (`## Quick setup (symlinks)` in the root README), then
+  `systemctl --user daemon-reload` (or `sudo systemctl daemon-reload` for
+  system units). CI now guards against reintroducing this (`scripts/test-smoke.sh`,
+  F-0024), but it cannot fix units already installed on a workstation outside
+  this repo.
+
 ## Data
 
 No database. `bug-bounty-agent/scope.yaml` and `bug-bounty-agent/memory/*.json`
