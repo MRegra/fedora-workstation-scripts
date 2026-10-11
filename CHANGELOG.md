@@ -19,6 +19,12 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   home self-hosted runners instead of GitHub-hosted runners. (#5)
 - `docs/runbook.md`: service map, health checks and failure modes (including
   F-0024).
+- `docs/runbook.md`: "Known issues" entry documenting that systemd units
+  created before the scripts moved into `fedora-maintenance/`/`system-health/`
+  subdirectories may still have `ExecStart=` pointing at the old flat repo
+  paths (`status=203/EXEC`), with the fix (point `ExecStart=` at the
+  `/usr/local/bin`/`~/.local/bin` symlink, re-create the symlink if missing,
+  `daemon-reload`).
 
 ### Changed
 

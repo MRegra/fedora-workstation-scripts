@@ -84,4 +84,6 @@ bash scripts/test-smoke-selftest.sh
 ## Operating the scripts
 
 See [`docs/runbook.md`](docs/runbook.md) for the service map, health checks
-and known failure modes (including the `203/EXEC` systemd failure, F-0024).
+and known failure modes (including the `203/EXEC` systemd failure, F-0024,
+and a known issue with units installed before the `fedora-maintenance/` /
+`system-health/` reorg).
