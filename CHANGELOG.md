@@ -31,3 +31,9 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - CI jobs moved from GitHub-hosted (`ubuntu-24.04`) to the home self-hosted
   runners (`runs-on: [self-hosted, home]`); shellcheck and actionlint are now
   installed without sudo (pinned downloads / `actions/setup-go`). (#5)
+
+### Fixed
+
+- `CLAUDE.md`: corrected the repository structure listing — the self-hosted
+  runner label config for actionlint lives at `.github/actionlint.yaml`, not
+  inside `.github/workflows/`. (docs pass, F-1595)

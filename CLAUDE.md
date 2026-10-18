@@ -14,7 +14,8 @@ local-ai-agent/      — MCP server exposing a local Ollama LLM to Claude Code
 bug-bounty-agent/    — overnight AI pipeline: recon → scan → browser → PoC → report (see bug-bounty-agent/README.md)
 scripts/             — CI support: test-smoke.sh (F-0024 regression guard) and its self-test
 docs/adr/            — Architecture Decision Records
-.github/workflows/   — CI (ci.yml), self-hosted runner label config (actionlint.yaml)
+.github/workflows/   — CI (ci.yml)
+.github/actionlint.yaml — self-hosted runner label config for actionlint
 ```
 
 Each shell entrypoint (`fedora-maintenance.sh`, `system-health-check.sh`,
