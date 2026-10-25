@@ -1,0 +1,103 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "description": [
+    "Shared Renovate policy for MRegra's repos: extend it with \"github>MRegra/fedora-workstation-scripts//renovate/default\". One edit here reaches every repo that extends it.",
+    "It lives in a public repo on purpose: a repo-scoped fine-grained RENOVATE_TOKEN can read public repos, so every repo can resolve it whoever owns the token.",
+    "Weekly grouped non-major PRs per ecosystem, majors one PR each, security fixes immediately, safe Renovate-side automerge only after every check is green."
+  ],
+  "extends": [
+    "config:recommended",
+    "docker:pinDigests",
+    "helpers:pinGitHubActionDigests",
+    ":configMigration"
+  ],
+  "timezone": "Europe/Zurich",
+  "schedule": ["before 9am on monday"],
+  "labels": ["dependencies"],
+  "dependencyDashboard": true,
+  "prConcurrentLimit": 5,
+  "prHourlyLimit": 2,
+  "minimumReleaseAge": "3 days",
+  "internalChecksFilter": "strict",
+  "osvVulnerabilityAlerts": true,
+  "vulnerabilityAlerts": {
+    "enabled": true,
+    "addLabels": ["security"],
+    "schedule": ["at any time"],
+    "minimumReleaseAge": null,
+    "prCreation": "immediate",
+    "prConcurrentLimit": 0,
+    "prHourlyLimit": 0,
+    "automerge": false
+  },
+  "lockFileMaintenance": {
+    "enabled": true,
+    "schedule": ["before 9am on monday"]
+  },
+  "platformAutomerge": false,
+  "automergeType": "pr",
+  "ignoreTests": false,
+  "packageRules": [
+    {
+      "description": ["Digest/pin updates carry no upstream release date, so the release-age wait would hold them forever; the age guard applies to version updates only."],
+      "matchUpdateTypes": ["digest", "pin", "pinDigest", "lockFileMaintenance"],
+      "minimumReleaseAge": null
+    },
+    {
+      "description": ["Non-major updates: one PR per ecosystem per week."],
+      "matchCategories": ["js"],
+      "matchUpdateTypes": ["minor", "patch", "digest", "pin", "pinDigest"],
+      "groupName": "npm non-major"
+    },
+    {
+      "matchCategories": ["java"],
+      "matchUpdateTypes": ["minor", "patch", "digest", "pin", "pinDigest"],
+      "groupName": "java non-major"
+    },
+    {
+      "matchCategories": ["python"],
+      "matchUpdateTypes": ["minor", "patch", "digest", "pin", "pinDigest"],
+      "groupName": "python non-major"
+    },
+    {
+      "matchCategories": ["rust"],
+      "matchUpdateTypes": ["minor", "patch", "digest", "pin", "pinDigest"],
+      "groupName": "rust non-major"
+    },
+    {
+      "matchCategories": ["docker"],
+      "matchUpdateTypes": ["minor", "patch", "digest", "pin", "pinDigest"],
+      "groupName": "docker non-major"
+    },
+    {
+      "matchCategories": ["ci"],
+      "matchUpdateTypes": ["minor", "patch", "digest", "pin", "pinDigest"],
+      "groupName": "github-actions non-major"
+    },
+    {
+      "matchCategories": ["kubernetes", "helm"],
+      "matchUpdateTypes": ["minor", "patch", "digest", "pin", "pinDigest"],
+      "groupName": "kubernetes non-major"
+    },
+    {
+      "description": ["Majors stay one PR per dependency so each is reviewed on its own; never automerged."],
+      "matchUpdateTypes": ["major"],
+      "addLabels": ["major"],
+      "automerge": false
+    },
+    {
+      "description": [
+        "Automerge patch, digest and pin updates (and lockFileMaintenance below) only when Renovate itself sees every status check on the branch green.",
+        "platformAutomerge is off on purpose: these repos have no branch protection or required checks, so GitHub native auto-merge would merge without waiting for CI. Renovate-side automerge (automergeType pr, ignoreTests false) merges on a later run only after all checks pass, and a branch with no checks at all is never automerged.",
+        "A grouped branch automerges only if every update in it is eligible, so a group that contains a minor bump waits for a human."
+      ],
+      "matchUpdateTypes": ["patch", "digest", "pin", "pinDigest", "lockFileMaintenance"],
+      "automerge": true
+    },
+    {
+      "description": ["0.x releases make no compatibility promise: no automerge for them."],
+      "matchCurrentVersion": "/^v?0\\./",
+      "automerge": false
+    }
+  ]
+}
