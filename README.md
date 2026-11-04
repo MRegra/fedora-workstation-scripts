@@ -87,3 +87,17 @@ See [`docs/runbook.md`](docs/runbook.md) for the service map, health checks
 and known failure modes (including the `203/EXEC` systemd failure, F-0024,
 and a known issue with units installed before the `fedora-maintenance/` /
 `system-health/` reorg).
+
+## Shared Renovate preset
+
+[`renovate/default.json`](renovate/default.json) is a Renovate config preset
+shared across the owner's repos. Renovate is **not enabled on this repo**;
+this file only exists so other repos can extend it with:
+
+```json
+"extends": ["github>MRegra/fedora-workstation-scripts//renovate/default"]
+```
+
+It lives here (a public repo) because a consumer's fine-grained
+`RENOVATE_TOKEN`, scoped to that one repo, can still read any public repo —
+see [ADR 0002](docs/adr/0002-shared-renovate-preset-in-this-public-repo.md).

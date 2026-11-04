@@ -14,6 +14,7 @@ local-ai-agent/      — MCP server exposing a local Ollama LLM to Claude Code
 bug-bounty-agent/    — overnight AI pipeline: recon → scan → browser → PoC → report (see bug-bounty-agent/README.md)
 scripts/             — CI support: test-smoke.sh (F-0024 regression guard) and its self-test
 docs/adr/            — Architecture Decision Records
+renovate/default.json — shared Renovate preset other repos extend (see ADR 0002); Renovate itself is not enabled on this repo
 .github/workflows/   — CI (ci.yml)
 .github/actionlint.yaml — self-hosted runner label config for actionlint
 ```
