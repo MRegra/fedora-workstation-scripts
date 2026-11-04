@@ -44,3 +44,8 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `CLAUDE.md`: corrected the repository structure listing — the self-hosted
   runner label config for actionlint lives at `.github/actionlint.yaml`, not
   inside `.github/workflows/`. (docs pass, F-1595)
+- `docs/runbook.md`: added a failure-mode row for a CI job being refused
+  outright on the shared home runner host due to low disk space (observed on
+  `gitleaks`, run 41771405938), distinct from the existing "runner offline"
+  row — the host rejects the job before any of its steps run. (docs pass,
+  F-2114)
