@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # Modes accepted by main(); scripts/test-smoke.sh checks README ExecStart lines against it.
-# smoke-modes: daily monthly major
+# smoke-modes: daily monthly major extended
 set -Eeuo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 LOG_FILE="${LOG_FILE:-/var/log/fedora-maintenance.log}"
 KEEP_KERNELS="${KEEP_KERNELS:-3}"   # override: KEEP_KERNELS=2 ./fedora-maintenance.sh monthly
@@ -12,6 +15,16 @@ NOTIFY_USER="${NOTIFY_USER:-}"      # desktop notification target username (opti
 # Fedora's own guidance for a single workstation; AUTO_INSTALL=1 restores the
 # old unattended-install behavior. Only the `daily` mode is affected.
 AUTO_INSTALL="${AUTO_INSTALL:-0}"
+
+# extended mode only (opt-in, each independently toggleable: default off so
+# `extended` without overrides stays a dry documented no-op for these two steps):
+UPDATE_PIP="${UPDATE_PIP:-0}"        # 1 = upgrade bug-bounty-agent's pip --user deps
+UPDATE_OLLAMA="${UPDATE_OLLAMA:-0}"  # 1 = re-pull every locally installed Ollama model
+# user whose `pip install --user` environment to upgrade (pip runs as root
+# otherwise, installing into /root instead of the desktop account). Falls
+# back to NOTIFY_USER since on this single-user workstation it's the same
+# account; override explicitly if that ever changes.
+MAINTENANCE_USER="${MAINTENANCE_USER:-${NOTIFY_USER:-}}"
 
 CURRENT_STEP=""
 MODE=""
@@ -218,6 +231,99 @@ firmware_update_monthly() {
   fi
 }
 
+pip_update_extended() {
+  if [[ "$UPDATE_PIP" != "1" ]]; then
+    step "Pip update (bug-bounty-agent)"
+    say "  SKIP (disabled; set UPDATE_PIP=1 to enable)"
+    log "pip update skipped: UPDATE_PIP not 1"
+    return 0
+  fi
+
+  local req_file="${REPO_ROOT}/bug-bounty-agent/requirements.txt"
+  if [[ ! -f "$req_file" ]]; then
+    step "Pip update (bug-bounty-agent)"
+    say "  SKIP (requirements.txt not found: $req_file)"
+    log "bug-bounty-agent/requirements.txt not found at ${req_file}; skipping pip update"
+    return 0
+  fi
+
+  if ! command_exists pip3; then
+    step "Pip update (bug-bounty-agent)"
+    say "  SKIP (pip3 not found)"
+    log "pip3 not found; skipping pip update"
+    return 0
+  fi
+
+  if [[ -z "$MAINTENANCE_USER" ]]; then
+    step "Pip update (bug-bounty-agent)"
+    say "  SKIP (MAINTENANCE_USER/NOTIFY_USER not set)"
+    log "MAINTENANCE_USER and NOTIFY_USER both unset; skipping pip update (would otherwise install into /root's pip --user site)"
+    return 0
+  fi
+
+  if ! id "$MAINTENANCE_USER" >/dev/null 2>&1; then
+    step "Pip update (bug-bounty-agent)"
+    say "  SKIP (user not found: $MAINTENANCE_USER)"
+    log "MAINTENANCE_USER '${MAINTENANCE_USER}' not found; skipping pip update"
+    return 0
+  fi
+
+  run_cmd_optional "Pip update (bug-bounty-agent, user: ${MAINTENANCE_USER})" \
+    runuser -u "$MAINTENANCE_USER" -- pip3 install --user --upgrade -r "$req_file"
+
+  # requirements.txt pins playwright with no upper bound, so an upgrade can
+  # move it to a release that expects a newer Chromium build than the one
+  # already cached under the user's ~/.cache/ms-playwright. install-tools.sh
+  # always pairs the pip install with this command (see its "Playwright
+  # browser" step); do the same here so the browser phase doesn't go stale.
+  if grep -q '^playwright' "$req_file"; then
+    run_cmd_optional "Playwright browser update (bug-bounty-agent, user: ${MAINTENANCE_USER})" \
+      runuser -u "$MAINTENANCE_USER" -- python3 -m playwright install chromium
+  fi
+}
+
+ollama_update_extended() {
+  if [[ "$UPDATE_OLLAMA" != "1" ]]; then
+    step "Ollama model update (local-ai-agent)"
+    say "  SKIP (disabled; set UPDATE_OLLAMA=1 to enable)"
+    log "ollama model update skipped: UPDATE_OLLAMA not 1"
+    return 0
+  fi
+
+  if ! command_exists ollama; then
+    step "Ollama model update (local-ai-agent)"
+    say "  SKIP (ollama not found)"
+    log "ollama not found; skipping model update"
+    return 0
+  fi
+
+  # `ollama pull` talks to the local daemon's API; it doesn't matter which
+  # user runs the CLI, so this can run as root like the other steps.
+  local list_output list_rc=0
+  list_output="$(ollama list 2>>"$LOG_FILE")" || list_rc="$?"
+  if [[ "$list_rc" -ne 0 ]]; then
+    step "Ollama model update (local-ai-agent)"
+    say "  SKIP (ollama list failed; daemon not running? see log: $LOG_FILE)"
+    log "ollama list exited ${list_rc}; skipping model update (daemon down or OLLAMA_HOST unreachable?)"
+    return 0
+  fi
+
+  local models
+  models="$(printf '%s\n' "$list_output" | awk 'NR>1 && NF{print $1}')"
+  if [[ -z "$models" ]]; then
+    step "Ollama model update (local-ai-agent)"
+    say "  SKIP (no local models installed)"
+    log "no ollama models found via 'ollama list'; skipping model update"
+    return 0
+  fi
+
+  local model
+  while IFS= read -r model; do
+    [[ -n "$model" ]] || continue
+    run_cmd_optional "Pull latest Ollama model: ${model}" ollama pull "$model"
+  done <<<"$models"
+}
+
 cleanup_system() {
   run_cmd_optional "DNF autoremove" dnf -y autoremove
   run_cmd_optional "DNF clean all" dnf -y clean all
@@ -350,19 +456,27 @@ Usage:
   sudo $0 daily
   sudo $0 monthly
   sudo $0 major
+  sudo $0 extended
 
 Modes:
-  daily   - notify-only by default: lists available updates + cleanup (set
-            AUTO_INSTALL=1 to install them unattended, the old behavior)
-  monthly - daily (unattended install) + firmware updates (fwupdmgr) + cleanup
-  major   - major Fedora version upgrade (assumes next version) + cleanup beforehand
+  daily    - notify-only by default: lists available updates + cleanup (set
+             AUTO_INSTALL=1 to install them unattended, the old behavior)
+  monthly  - daily (unattended install) + firmware updates (fwupdmgr) + cleanup
+  major    - major Fedora version upgrade (assumes next version) + cleanup beforehand
+  extended - monthly (dnf + firmware + flatpak) + opt-in pip update
+             (bug-bounty-agent) + opt-in Ollama model update (local-ai-agent)
+             + cleanup. Each extra step is off by default; enable with
+             UPDATE_PIP=1 / UPDATE_OLLAMA=1.
 
 Env vars:
-  AUTO_INSTALL=1    Install daily updates unattended instead of notify-only (default: 0)
-  KEEP_KERNELS=3    How many kernels to keep when pruning old ones (default: 3)
-  LOG_DAYS=30       How many days to keep rotated logs (0 disables cleanup)
-  JOURNAL_DAYS=7    Journal retention in days (0 disables cleanup)
-  NOTIFY_USER=you   Desktop notification target (optional)
+  AUTO_INSTALL=1      Install daily updates unattended instead of notify-only (default: 0)
+  KEEP_KERNELS=3      How many kernels to keep when pruning old ones (default: 3)
+  LOG_DAYS=30         How many days to keep rotated logs (0 disables cleanup)
+  JOURNAL_DAYS=7      Journal retention in days (0 disables cleanup)
+  NOTIFY_USER=you     Desktop notification target (optional)
+  UPDATE_PIP=1        extended mode: upgrade bug-bounty-agent's pip --user deps (default: 0)
+  UPDATE_OLLAMA=1     extended mode: re-pull every locally installed Ollama model (default: 0)
+  MAINTENANCE_USER=you  User whose pip --user environment to upgrade (default: NOTIFY_USER)
 
 Log:
   $LOG_FILE
@@ -405,6 +519,17 @@ main() {
       flatpak_update
       cleanup_system
       major_version_upgrade
+      ;;
+    extended)
+      # monthly (dnf + firmware + flatpak), plus the owner's other dev-stack
+      # ecosystems (opt-in, see usage()).
+      dnf_update_daily
+      firmware_update_monthly
+      flatpak_update
+      pip_update_extended
+      ollama_update_extended
+      cleanup_system
+      maybe_reboot_hint
       ;;
     *)
       usage

@@ -12,6 +12,9 @@ Automate routine Fedora maintenance with safe defaults:
   typically triggered by hand or a scheduled maintenance window).
 - Optional Flatpak maintenance, firmware updates, cleanup, major version
   upgrade
+- Optional (`extended` mode): pip updates for `bug-bounty-agent` and Ollama
+  model updates for `local-ai-agent` — the other dev-stack ecosystems this
+  repo already runs, kept out of the default `daily`/`monthly` path
 
 ## Requirements
 
@@ -20,6 +23,8 @@ Automate routine Fedora maintenance with safe defaults:
 - Optional: `dnf-plugins-core` for `needs-restarting` and `repoquery`
 - Optional: `flatpak` for Flatpak maintenance
 - Optional: `libnotify` for desktop notifications
+- Optional (`extended` mode): `pip3` for the bug-bounty-agent pip update step,
+  `ollama` for the Ollama model update step
 
 Install optional tools:
 
@@ -58,6 +63,9 @@ Ensure `~/.local/bin` is on your `PATH` if you use the user-local symlink.
 sudo fedora-maintenance daily
 sudo fedora-maintenance monthly
 sudo fedora-maintenance major
+
+# opt-in: monthly (dnf + firmware + flatpak) + this repo's other ecosystems (off by default, see below)
+sudo UPDATE_PIP=1 UPDATE_OLLAMA=1 fedora-maintenance extended
 ```
 
 Logs:
@@ -182,6 +190,39 @@ Add:
 0 9 1 * * /usr/local/bin/fedora-maintenance monthly
 ```
 
+## Extended mode (pip + Ollama)
+
+`extended` runs the same steps as `monthly` (dnf + firmware + flatpak), plus two opt-in steps for the
+other dev-stack ecosystems this repo already runs — `bug-bounty-agent`
+(pip) and `local-ai-agent` (Ollama). Each is off by default and toggled
+independently:
+
+- `UPDATE_PIP=1` — runs `pip3 install --user --upgrade -r bug-bounty-agent/requirements.txt`
+  as `MAINTENANCE_USER` (default: `NOTIFY_USER`). It must run as that user,
+  not root, or the packages land in `/root`'s `pip --user` site instead of
+  the desktop account's. If neither is set, the step is skipped and logged.
+  requirements.txt has no upper bound on `playwright`, and every Playwright
+  release pins its own Chromium build, so when `requirements.txt` pins
+  `playwright`, this step also runs `python3 -m playwright install chromium`
+  as the same user right after the pip upgrade — the same pairing
+  `install-tools.sh` does on first install — so an upgraded Playwright isn't
+  left pointing at a Chromium build that's no longer cached.
+- `UPDATE_OLLAMA=1` — runs `ollama pull <model>` for every model already
+  present (`ollama list`), to fetch newer digests. Runs as whichever user
+  invokes the script, since `ollama pull` only talks to the local daemon's
+  API; model storage belongs to the `ollama` service, not the caller. If
+  `ollama list` itself fails (e.g. the daemon isn't running), that's logged
+  as its own `SKIP` distinct from "no local models installed".
+
+Both steps log the same way as the existing ones (`- <step>` / `OK` / `WARN`
+to stdout and `$LOG_FILE`) and never fail the run: a missing `pip3`/`ollama`,
+an unset `MAINTENANCE_USER`, an unreachable Ollama daemon, or no local Ollama
+models are all a logged `SKIP`, not an error.
+
+```bash
+sudo UPDATE_PIP=1 UPDATE_OLLAMA=1 MAINTENANCE_USER=mregra fedora-maintenance extended
+```
+
 ## Notes
 
 - The script refuses to run without root.
@@ -196,3 +237,4 @@ Add:
 - Log retention defaults to 30 days of rotated logs. Set `LOG_DAYS=0` to disable cleanup.
 - Journal retention defaults to 7 days. Set `JOURNAL_DAYS=0` to disable cleanup.
 - Desktop notifications are optional: set `NOTIFY_USER=yourusername` in the unit and keep a GUI session active.
+- `extended` mode's pip/Ollama steps are opt-in (see above); plain `daily`/`monthly`/`major` never touch them.
