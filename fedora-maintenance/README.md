@@ -2,10 +2,16 @@
 
 Automate routine Fedora maintenance with safe defaults:
 
-- DNF updates and cleanup
-- Optional Flatpak maintenance
-- Optional firmware updates
-- Optional major version upgrade
+- `daily` defaults to **notify-only**: lists available DNF updates via a
+  desktop notification instead of installing them (set `AUTO_INSTALL=1` for
+  the old unattended-install behavior). This follows [Fedora's own
+  guidance](https://docs.fedoraproject.org/en/quick-docs/autoupdates/) that a
+  single workstation should default to notify/download-only, with a human
+  reviewing before install.
+- `monthly`/`major` still install unattended (they run less often and are
+  typically triggered by hand or a scheduled maintenance window).
+- Optional Flatpak maintenance, firmware updates, cleanup, major version
+  upgrade
 
 ## Requirements
 
@@ -200,6 +206,12 @@ Add:
 - The script refuses to run without root.
 - `--dry-run` lists pending actions for any mode without changing the
   system; exits `0`.
+- `daily` is notify-only by default: it lists available updates (via `dnf
+  check-update`) and sends a desktop notification instead of installing
+  them. Set `AUTO_INSTALL=1` (e.g. `Environment=AUTO_INSTALL=1` in the
+  systemd unit, or `AUTO_INSTALL=1 sudo fedora-maintenance daily`) to restore
+  unattended installs for `daily`. `monthly` and `major` are unaffected and
+  always install.
 - Major upgrade uses the next Fedora version by default.
 - Change how many kernels to keep with `KEEP_KERNELS=2` (or another value).
 - Log retention defaults to 30 days of rotated logs. Set `LOG_DAYS=0` to disable cleanup.

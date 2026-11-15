@@ -65,7 +65,8 @@ source "$SCRIPT"
 run_dry_actions() {
   local mode="$1"
   case "$mode" in
-    daily) dnf_update_daily && flatpak_update && cleanup_system && maybe_reboot_hint ;;
+    # Both daily paths: notify-only (default) and AUTO_INSTALL=1 (install).
+    daily) AUTO_INSTALL=0 daily_mode && AUTO_INSTALL=1 daily_mode ;;
     monthly) dnf_update_daily && firmware_update_monthly && flatpak_update && cleanup_system && maybe_reboot_hint ;;
     major) dnf_update_daily && flatpak_update && cleanup_system && major_version_upgrade ;;
   esac
