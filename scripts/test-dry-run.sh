@@ -48,6 +48,16 @@ esac
 "
 write_stub flatpak "touch '$MARKERS/flatpak-mutated'; exit 0"
 write_stub fwupdmgr "touch '$MARKERS/fwupdmgr-mutated'; exit 0"
+# extended mode: `ollama list` is a read-only query; `ollama pull` and anything
+# run through runuser (pip/playwright as MAINTENANCE_USER) mutate.
+write_stub ollama "
+case \"\$1\" in
+  list) printf 'NAME ID SIZE MODIFIED\nllama3:latest abc 4GB now\n'; exit 0 ;;
+  *) touch '$MARKERS/ollama-mutated'; exit 0 ;;
+esac
+"
+write_stub runuser "touch '$MARKERS/runuser-mutated'; exit 0"
+write_stub pip3 "touch '$MARKERS/pip3-mutated'; exit 0"
 write_stub needs-restarting "exit 0"
 write_stub rpm "[[ \"\$*\" == *%fedora* ]] && echo 44 || exit 0"
 
@@ -69,6 +79,11 @@ run_dry_actions() {
     daily) AUTO_INSTALL=0 daily_mode && AUTO_INSTALL=1 daily_mode ;;
     monthly) dnf_update_daily && firmware_update_monthly && flatpak_update && cleanup_system && maybe_reboot_hint ;;
     major) dnf_update_daily && flatpak_update && cleanup_system && major_version_upgrade ;;
+    # Both opt-in steps enabled, so their pip/playwright/ollama commands are reached.
+    extended)
+      UPDATE_PIP=1 UPDATE_OLLAMA=1 MAINTENANCE_USER="$(id -un)" \
+        eval 'dnf_update_daily && firmware_update_monthly && flatpak_update && pip_update_extended && ollama_update_extended && cleanup_system && maybe_reboot_hint'
+      ;;
   esac
 }
 
@@ -80,15 +95,26 @@ check_mode() {
 
   DRY_RUN=1
   local rc=0
-  PATH="$WORK/bin:$PATH" run_dry_actions "$mode" >/dev/null || rc=$?
+  PATH="$WORK/bin:$PATH" run_dry_actions "$mode" >"$WORK/dry.out" || rc=$?
   if [[ "$rc" -ne 0 ]]; then
     bad "$mode --dry-run: action functions returned non-zero ($rc)"
   else
     pass "$mode --dry-run: action functions exit 0"
   fi
+  if [[ "$mode" == "extended" ]]; then
+    # Not vacuous: the opt-in steps must be reached and previewed, not skipped.
+    local want
+    for want in 'pip3 install --user --upgrade' 'ollama pull llama3:latest'; do
+      if grep -q "WOULD RUN: .*${want}" "$WORK/dry.out"; then
+        pass "extended --dry-run: previews '${want}'"
+      else
+        bad "extended --dry-run: '${want}' was not previewed (step skipped?)"
+      fi
+    done
+  fi
 
   local marker leftover=0
-  for marker in dnf-mutated flatpak-mutated fwupdmgr-mutated; do
+  for marker in dnf-mutated flatpak-mutated fwupdmgr-mutated ollama-mutated runuser-mutated pip3-mutated; do
     if [[ -e "$MARKERS/$marker" ]]; then
       bad "$mode --dry-run: $marker fired (a real command ran, system was modified)"
       leftover=1
@@ -120,7 +146,7 @@ check_mode() {
   fi
 }
 
-for m in daily monthly major; do
+for m in daily monthly major extended; do
   check_mode "$m"
 done
 
