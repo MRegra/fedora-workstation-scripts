@@ -127,3 +127,5 @@ jobs:
         run: bash scripts/test-smoke-selftest.sh
       - name: Smoke each entrypoint (--help, no sudo) and README symlink targets
         run: bash scripts/test-smoke.sh
+      - name: Dry-run regression test (F-2583; no sudo/root needed)
+        run: bash scripts/test-dry-run.sh

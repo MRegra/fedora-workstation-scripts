@@ -70,6 +70,12 @@ labels `self-hosted, Linux, X64, home`) rather than GitHub-hosted runners — se
   effects). A script whose source never mentions `--help` is reported and not
   run. `scripts/test-smoke-selftest.sh` proves the smoke test goes red on each
   of those failures.
+- **dry-run regression test** (`scripts/test-dry-run.sh`) — sources
+  `fedora-maintenance.sh` with `dnf`/`flatpak`/`fwupdmgr` stubbed on `PATH`
+  and proves that `daily`/`monthly`/`major` under `DRY_RUN=1` never invoke a
+  mutating command (including `major`'s `dnf -y system-upgrade reboot`
+  trigger), while the same actions under `DRY_RUN=0` do invoke the stubs —
+  so the test isn't vacuous. No root/sudo needed.
 
 Every runnable script therefore supports `--help`. When you move a script,
 update its README symlink line in the same change. When you add a mode to
@@ -79,6 +85,7 @@ locally with:
 ```bash
 bash scripts/test-smoke.sh
 bash scripts/test-smoke-selftest.sh
+bash scripts/test-dry-run.sh
 ```
 
 ## Operating the scripts

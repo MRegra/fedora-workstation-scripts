@@ -10,7 +10,8 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `fedora-maintenance.sh`: `--dry-run` flag for `daily`/`monthly`/`major`.
   Lists the pending dnf/flatpak/firmware/kernel-prune actions (and, for
   `major`, the system-upgrade download/reboot steps) without running any of
-  them, and exits 0. Regression test: `scripts/test-dry-run.sh`. (#12)
+  them, and exits 0. Regression test: `scripts/test-dry-run.sh`, run by the
+  `smoke` CI job on every push/PR. (#12)
 - `fedora-maintenance.sh daily` now defaults to notify-only: it lists
   available DNF updates via a desktop notification instead of installing
   them, per Fedora's own guidance that a single workstation should default

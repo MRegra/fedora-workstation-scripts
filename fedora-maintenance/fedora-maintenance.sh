@@ -385,9 +385,10 @@ Modes:
 
 Flags:
   --dry-run   List the dnf/flatpak/firmware/kernel-prune/upgrade actions this
-              mode would take, without running any of them. Exits 0. Nothing
-              on the system is modified (no package install/remove/update, no
-              firmware flash, no reboot).
+              mode would take, without running any of them. Exits 0. No
+              package install/remove/update, no firmware flash, no reboot.
+              The log file is still created/rotated the same way a real
+              run's is (see Log below).
 
 Env vars:
   AUTO_INSTALL=1    Install daily updates unattended instead of notify-only (default: 0)
