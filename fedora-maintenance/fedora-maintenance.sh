@@ -190,8 +190,12 @@ check_updates_daily() {
     log "DRY-RUN: check for updates | cmd: dnf -y check-update --refresh"
     return 0
   fi
-  output="$(dnf -y check-update --refresh 2>&1)"
-  rc="$?"
+  # dnf check-update exits 100 when updates are available and that is the
+  # common case here, not a failure; capture rc with `|| rc=$?` so it never
+  # trips `set -e` (an unguarded failing command substitution would abort
+  # the whole script before the case below runs, see BashFAQ/105).
+  rc=0
+  output="$(dnf -y check-update --refresh 2>&1)" || rc="$?"
   printf '%s\n' "$output" >>"$LOG_FILE"
 
   case "$rc" in
@@ -369,9 +373,15 @@ cleanup_system() {
   if command_exists dnf; then
     step "Prune old kernels (keep ${KEEP_KERNELS})"
     local output rc old_kernels
+    # Same reason as check_updates_daily/maybe_reboot_hint/
+    # post_maintenance_health_check above: capture rc with `|| rc=$?` so a
+    # nonzero repoquery exit (no installonly packages matched, a transient
+    # dnf error, ...) is handled by the `if` below instead of tripping
+    # `set -e` and aborting the run - cleanup_system runs before the gate in
+    # every mode (F-2585 review).
+    rc=0
     output="$(dnf -q repoquery --installonly --latest-limit="-${KEEP_KERNELS}" \
-      kernel kernel-core kernel-modules kernel-modules-extra 2>&1)"
-    rc="$?"
+      kernel kernel-core kernel-modules kernel-modules-extra 2>&1)" || rc="$?"
     printf '%s\n' "$output" >>"$LOG_FILE"
     if [[ "$rc" -ne 0 ]]; then
       say "  WARN (repoquery failed; see log: $LOG_FILE)"
@@ -423,6 +433,10 @@ post_maintenance_health_check() {
     return 0
   fi
 
+  # Overridable so a test can isolate step 4 from a real workstation that has
+  # the documented /usr/local/bin/system-health-check symlink installed
+  # (F-2585 review).
+  local system_path="${HEALTH_CHECK_SYSTEM_PATH:-/usr/local/bin/system-health-check}"
   local health_check=""
   if [[ -n "${HEALTH_CHECK_CMD:-}" ]]; then
     health_check="$HEALTH_CHECK_CMD"
@@ -430,25 +444,36 @@ post_maintenance_health_check() {
     health_check="${REPO_ROOT}/system-health/system-health-check.sh"
   elif command_exists system-health-check; then
     health_check="$(command -v system-health-check)"
-  elif [[ -f /usr/local/bin/system-health-check ]]; then
-    health_check="/usr/local/bin/system-health-check"
+  elif [[ -f "$system_path" ]]; then
+    health_check="$system_path"
   fi
 
   if [[ -z "$health_check" ]] || [[ ! -f "$health_check" ]]; then
     say "  SKIP (system-health-check not found)"
-    log "WARN: health check not run: system-health-check not found (checked \$HEALTH_CHECK_CMD, ${REPO_ROOT}/system-health/system-health-check.sh, PATH, /usr/local/bin/system-health-check)"
+    log "WARN: health check not run: system-health-check not found (checked \$HEALTH_CHECK_CMD, ${REPO_ROOT}/system-health/system-health-check.sh, PATH, ${system_path})"
     HEALTH_NOTE="health check NOT run (system-health-check not found)"
     return 0
   fi
 
-  local reason
-  if reason="$(bash "$health_check" --check-only 2>>"$LOG_FILE")"; then
+  # Capture rc with `|| rc=$?` (same reason as check_updates_daily and
+  # maybe_reboot_hint above: an unguarded nonzero exit here would trip
+  # `set -e` and abort before the else-branch below ever ran). Exit 1 is the
+  # documented "pressure detected" signal; any other nonzero code means the
+  # health check itself errored (crashed, bad interpreter, ...), which is
+  # reported distinctly instead of being guessed as pressure (F-2585 review).
+  local reason rc=0
+  reason="$(bash "$health_check" --check-only 2>>"$LOG_FILE")" || rc="$?"
+  if [[ "$rc" -eq 0 ]]; then
     ok
     log "post-maintenance health check: no pressure detected"
-  else
+  elif [[ "$rc" -eq 1 ]]; then
     say "  FLAGGED: ${reason:-pressure detected}"
     log "post-maintenance health check flagged: ${reason:-pressure detected}"
     HEALTH_NOTE="health check flagged: ${reason:-pressure detected}"
+  else
+    say "  ERROR (health check exited ${rc}, see log)"
+    log "post-maintenance health check errored: rc=${rc}"
+    HEALTH_NOTE="health check errored (rc=${rc})"
   fi
 }
 
@@ -469,8 +494,13 @@ maybe_reboot_hint() {
 
   if [[ -n "$needs_cmd" ]]; then
     local rc
-    $needs_cmd -r >/dev/null 2>&1
-    rc="$?"
+    # needs-restarting -r exits 1 when a reboot is recommended, which is the
+    # expected/common case right after a kernel or glibc update, not a
+    # failure; capture rc with `|| rc=$?` so it never trips `set -e` (an
+    # unguarded nonzero exit here would abort the whole script before the
+    # post-maintenance health-check gate below ever runs).
+    rc=0
+    $needs_cmd -r >/dev/null 2>&1 || rc="$?"
     step "Reboot recommendation"
     if [[ "$rc" -eq 1 ]]; then
       say "  RECOMMENDED (needs-restarting)"

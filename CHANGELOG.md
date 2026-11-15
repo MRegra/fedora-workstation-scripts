@@ -22,8 +22,20 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   loudly (`WARN: health check not run: ...`), never a silent skip. The gate
   is advisory and never changes the run's exit code. A cheap echo of
   Bluefin's "automatic update + easy rollback if it looks wrong" trust model
-  on a traditional dnf Workstation that has no OS-level rollback. New
-  regression test: `scripts/test-health-check-gate.sh` (F-2585, issue #14).
+  on a traditional dnf Workstation that has no OS-level rollback.
+  `maybe_reboot_hint`, `check_updates_daily` and `cleanup_system`'s
+  old-kernel pruning step, all of which run right before the gate, now
+  capture their commands' expected/possible non-zero exit codes
+  (`needs-restarting -r` returning 1, `dnf check-update` returning 100, a
+  failing `dnf repoquery`) with `|| rc=$?` instead of a bare `cmd; rc=$?` -
+  under `set -Eeuo pipefail` the old form tripped `errexit` and aborted the
+  run before the gate ever ran, on most update days and right after kernel
+  updates. The fallback system path
+  is overridable with `HEALTH_CHECK_SYSTEM_PATH` for test isolation, and a
+  health check that exits with something other than 0 or 1 is now reported
+  as "health check errored (rc=N)" instead of being guessed as pressure.
+  New regression tests: `scripts/test-health-check-gate.sh` and
+  `scripts/test-gate-reachable.sh` (F-2585, issue #14).
 - `fedora-maintenance.sh`: `--dry-run` flag for `daily`/`monthly`/`major`/`extended`.
   Lists the pending dnf/flatpak/firmware/kernel-prune actions (and, for
   `major`, the system-upgrade download/reboot steps) without running any of

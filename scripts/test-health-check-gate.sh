@@ -133,6 +133,7 @@ run_gate() {
   HEALTH_NOTE_FILE="$WORK/note-$2.log"; : >"$HEALTH_NOTE_FILE"
   NOTIFY_LOG="$NOTIFY_LOG" MAINT_LOG="$MAINT_LOG" HEALTH_NOTE_FILE="$HEALTH_NOTE_FILE" \
     DRY_RUN_OVERRIDE="${DRY_RUN_OVERRIDE:-}" HEALTH_CHECK_CMD="${HEALTH_CHECK_CMD:-}" \
+    HEALTH_CHECK_SYSTEM_PATH="${HEALTH_CHECK_SYSTEM_PATH:-$WORK/no-such-system-health-check}" \
     PATH="${GATE_PATH:-$PATH}" \
     bash "$RUNNER" "$maint_path"
 }
@@ -177,6 +178,10 @@ fi
 # 3c. no health check can be found anywhere (repo copy missing, nothing on
 #     PATH, no /usr/local/bin fallback): this must be LOUD, not a silent
 #     skip. (Replaces the old test that accepted a quiet skip as OK.)
+#     run_gate always points HEALTH_CHECK_SYSTEM_PATH at a path inside $WORK
+#     that is guaranteed not to exist, so this case is isolated from a real
+#     workstation that has the documented /usr/local/bin/system-health-check
+#     symlink installed (F-2585 review).
 mkdir -p "$WORK/isolated"
 cp "$MAINTENANCE" "$WORK/isolated/fedora-maintenance.sh"
 GATE_PATH="$WORK/isolated-empty-bin:/usr/bin:/bin" run_gate "$WORK/isolated/fedora-maintenance.sh" missing
