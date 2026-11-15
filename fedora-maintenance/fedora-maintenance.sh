@@ -28,6 +28,7 @@ MAINTENANCE_USER="${MAINTENANCE_USER:-${NOTIFY_USER:-}}"
 
 CURRENT_STEP=""
 MODE=""
+DRY_RUN=0                           # set by --dry-run: list pending actions, change nothing
 
 log() {
   local msg="$1"
@@ -133,6 +134,11 @@ run_cmd_required() {
   local desc="$1"
   shift
   step "$desc"
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    say "  WOULD RUN: $*"
+    log "DRY-RUN: $desc | cmd: $*"
+    return 0
+  fi
   if "$@" >>"$LOG_FILE" 2>&1; then
     ok
   else
@@ -146,6 +152,11 @@ run_cmd_optional() {
   local desc="$1"
   shift
   step "$desc"
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    say "  WOULD RUN: $*"
+    log "DRY-RUN: $desc | cmd: $*"
+    return 0
+  fi
   if "$@" >>"$LOG_FILE" 2>&1; then
     ok
   else
@@ -165,6 +176,12 @@ dnf_update_daily() {
 check_updates_daily() {
   step "Check for updates (notify-only; set AUTO_INSTALL=1 to install unattended)"
   local output rc pkg_lines pkg_count summary
+  # --dry-run: no metadata refresh and no desktop notification either.
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    say "  WOULD RUN: dnf -y check-update --refresh (and notify if updates are available)"
+    log "DRY-RUN: check for updates | cmd: dnf -y check-update --refresh"
+    return 0
+  fi
   output="$(dnf -y check-update --refresh 2>&1)"
   rc="$?"
   printf '%s\n' "$output" >>"$LOG_FILE"
@@ -356,6 +373,10 @@ cleanup_system() {
       if [[ -z "$old_kernels" ]]; then
         say "  OK (nothing to remove)"
         log "No old kernels to remove"
+      elif [[ "$DRY_RUN" -eq 1 ]]; then
+        # shellcheck disable=SC2086  # intentional word splitting, see dnf -y remove below
+        say "  WOULD REMOVE: $(printf '%s ' $old_kernels)"
+        log "DRY-RUN: would remove old kernels: ${old_kernels}"
       else
         # shellcheck disable=SC2086  # intentional word splitting: a space/newline
         # separated list of kernel package names must expand to multiple args.
@@ -428,6 +449,11 @@ major_version_upgrade() {
     dnf -y system-upgrade download --releasever="${target_ver}" --allowerasing
 
   step "Reboot into upgrade environment"
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    say "  WOULD RUN: dnf -y system-upgrade reboot (system would reboot now)"
+    log "DRY-RUN: would trigger reboot into system upgrade environment"
+    return 0
+  fi
   say "  NOTE: System will reboot now if this succeeds."
   log "Triggering reboot into system upgrade environment"
   dnf -y system-upgrade reboot >>"$LOG_FILE" 2>&1
@@ -453,10 +479,10 @@ usage() {
 Fedora Maintenance Script
 
 Usage:
-  sudo $0 daily
-  sudo $0 monthly
-  sudo $0 major
-  sudo $0 extended
+  sudo $0 daily [--dry-run]
+  sudo $0 monthly [--dry-run]
+  sudo $0 major [--dry-run]
+  sudo $0 extended [--dry-run]
 
 Modes:
   daily    - notify-only by default: lists available updates + cleanup (set
@@ -467,6 +493,13 @@ Modes:
              (bug-bounty-agent) + opt-in Ollama model update (local-ai-agent)
              + cleanup. Each extra step is off by default; enable with
              UPDATE_PIP=1 / UPDATE_OLLAMA=1.
+
+Flags:
+  --dry-run   List the dnf/flatpak/firmware/kernel-prune/upgrade actions this
+              mode would take, without running any of them. Exits 0. No
+              package install/remove/update, no firmware flash, no reboot.
+              The log file is still created/rotated the same way a real
+              run's is (see Log below).
 
 Env vars:
   AUTO_INSTALL=1      Install daily updates unattended instead of notify-only (default: 0)
@@ -484,13 +517,22 @@ EOF
 }
 
 main() {
-  local mode="${1:-}"
+  local mode="" arg
+  for arg in "$@"; do
+    case "$arg" in
+      -h | --help | help)
+        usage
+        exit 0
+        ;;
+      --dry-run)
+        DRY_RUN=1
+        ;;
+      *)
+        [[ -z "$mode" ]] && mode="$arg"
+        ;;
+    esac
+  done
   [[ -n "$mode" ]] || { usage; exit 1; }
-
-  if [[ "$mode" == "-h" || "$mode" == "--help" || "$mode" == "help" ]]; then
-    usage
-    exit 0
-  fi
 
   MODE="$mode"
   need_root "$@"
@@ -498,8 +540,13 @@ main() {
   manage_logs
   trap on_exit EXIT
 
-  say "Fedora maintenance: mode=${mode}"
-  log "========== START: mode=${mode} =========="
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    say "Fedora maintenance: mode=${mode} (dry run, nothing will be changed)"
+    log "========== START: mode=${mode} dry-run=1 =========="
+  else
+    say "Fedora maintenance: mode=${mode}"
+    log "========== START: mode=${mode} =========="
+  fi
   log "Host: $(hostname) | Fedora: $(cat /etc/fedora-release 2>/dev/null || true) | Kernel: $(uname -r)"
 
   case "$mode" in
@@ -540,9 +587,10 @@ main() {
   log "========== END: mode=${mode} =========="
 }
 
-# Guarded so scripts/test-fedora-maintenance-daily.sh can `source` this file
-# (to unit-test daily_mode/check_updates_daily with faked dnf/notify_user)
-# without running main() for real.
+# Guarded so scripts/test-dry-run.sh and
+# scripts/test-fedora-maintenance-daily.sh can `source` this file (to stub
+# functions/env like LOG_FILE and unit-test daily_mode/check_updates_daily
+# with faked dnf/notify_user) without running main() for real.
 if [[ "${BASH_SOURCE[0]:-}" == "${0}" ]]; then
   main "$@"
 fi

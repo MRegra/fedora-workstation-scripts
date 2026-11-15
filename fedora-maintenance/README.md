@@ -68,6 +68,26 @@ sudo fedora-maintenance major
 sudo UPDATE_PIP=1 UPDATE_OLLAMA=1 fedora-maintenance extended
 ```
 
+### Preview mode (`--dry-run`)
+
+Add `--dry-run` to any mode to see what it would do without changing
+anything:
+
+```bash
+sudo fedora-maintenance daily --dry-run
+sudo fedora-maintenance monthly --dry-run
+sudo fedora-maintenance major --dry-run
+sudo fedora-maintenance extended --dry-run
+```
+
+This lists the pending dnf/flatpak/firmware actions (package updates,
+flatpak updates, kernel pruning, and for `major`, the Fedora version-upgrade
+download and reboot) without installing, removing, updating or rebooting
+anything, and exits `0`. Useful before `major`, since that upgrade path
+reboots the machine and is not easily reversible. Still requires `sudo`
+(the log is written the same way a real run's is), but no package, firmware
+or kernel state is touched.
+
 Logs:
 
 ```bash
@@ -226,6 +246,8 @@ sudo UPDATE_PIP=1 UPDATE_OLLAMA=1 MAINTENANCE_USER=mregra fedora-maintenance ext
 ## Notes
 
 - The script refuses to run without root.
+- `--dry-run` lists pending actions for any mode without changing the
+  system; exits `0`.
 - `daily` is notify-only by default: it lists available updates (via `dnf
   check-update`) and sends a desktop notification instead of installing
   them. Set `AUTO_INSTALL=1` (e.g. `Environment=AUTO_INSTALL=1` in the

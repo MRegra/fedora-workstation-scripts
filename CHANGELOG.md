@@ -7,6 +7,11 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `fedora-maintenance.sh`: `--dry-run` flag for `daily`/`monthly`/`major`/`extended`.
+  Lists the pending dnf/flatpak/firmware/kernel-prune actions (and, for
+  `major`, the system-upgrade download/reboot steps) without running any of
+  them, and exits 0. Regression test: `scripts/test-dry-run.sh`, run by the
+  `smoke` CI job on every push/PR. (#12)
 - `fedora-maintenance.sh extended` mode: opt-in steps that update the other
   dev-stack ecosystems this repo already runs — `pip3 install --user
   --upgrade` for `bug-bounty-agent`'s deps (`UPDATE_PIP=1`) and `ollama pull`
