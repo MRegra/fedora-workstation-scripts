@@ -46,6 +46,15 @@ Ensure `~/.local/bin` is on your `PATH` if you use the user-local symlink.
 system-health-check
 ```
 
+`fedora-maintenance` (`daily`/`monthly`/`extended`, not `major`, which
+reboots) also runs this script with `--check-only` right after a maintenance
+pass, to echo Bluefin-style "rollback if it looks wrong" safety on a
+traditional dnf Workstation (F-2585). In that mode it prints the pressure
+reason and exits 1 instead of sending a notification — `fedora-maintenance`
+then folds the result into its own, distinctly-worded final notification so
+a post-maintenance warning is never confused with this script's normal
+hourly one. See `../fedora-maintenance/README.md`.
+
 ## Automation
 
 Systemd timers are recommended on Fedora. Cron works too.

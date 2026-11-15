@@ -127,5 +127,11 @@ jobs:
         run: bash scripts/test-smoke-selftest.sh
       - name: Smoke each entrypoint (--help, no sudo) and README symlink targets
         run: bash scripts/test-smoke.sh
+      - name: Health check gate test (F-2585)
+        run: bash scripts/test-health-check-gate.sh
+      - name: Health check gate reachability test (F-2585 adversary review; no sudo/root needed)
+        run: bash scripts/test-gate-reachable.sh
+      - name: Daily mode notify-only test (F-2584; no sudo/root needed)
+        run: bash scripts/test-fedora-maintenance-daily.sh
       - name: Dry-run regression test (F-2583; no sudo/root needed)
         run: bash scripts/test-dry-run.sh

@@ -12,7 +12,8 @@ soft-reboot/         — replicates reboot cleanup effects without rebooting (su
 system-audit/        — read-only security + performance audit, PASS/WARN/ALERT, baseline diffing (system-audit.sh [--save-baseline])
 local-ai-agent/      — MCP server exposing a local Ollama LLM to Claude Code
 bug-bounty-agent/    — overnight AI pipeline: recon → scan → browser → PoC → report (see bug-bounty-agent/README.md)
-scripts/             — CI support: test-smoke.sh (F-0024 regression guard) and its self-test
+scripts/             — CI support: test-smoke.sh (F-0024 regression guard) and its self-test,
+                       test-health-check-gate.sh (F-2585 regression guard)
 docs/adr/            — Architecture Decision Records
 renovate/default.json — shared Renovate preset other repos extend (see ADR 0002); Renovate itself is not enabled on this repo
 .github/workflows/   — CI (ci.yml)
@@ -82,6 +83,14 @@ There is no application test suite — these are maintenance/automation
 scripts. The CI safety net is `scripts/test-smoke.sh` (smoke-tests every
 shell entrypoint's `--help` path and README/systemd wiring) plus
 `scripts/test-smoke-selftest.sh` (proves the smoke test itself goes red on
-each F-0024 failure mode). `shellcheck` and `gitleaks` run on every push/PR
-via CI (see above). The Python side (`bug-bounty-agent/`, `local-ai-agent/`)
-has no automated tests or lint job yet.
+each F-0024 failure mode), and `scripts/test-health-check-gate.sh` (regression
+guard for F-2585: `fedora-maintenance.sh` must run `system-health-check.sh
+--check-only` at the end of `daily`/`monthly`/`extended` — found symlink-safely
+via `REPO_ROOT`/`PATH`/`/usr/local/bin`, so it still works through the
+documented `/usr/local/bin/fedora-maintenance` install — and fold the result
+into one final notification, never silently skipping when the health check
+can't be found — unit-tests both scripts with a faked `free` so it never
+depends on this machine's real memory/swap state). `shellcheck` and
+`gitleaks` run on every push/PR via CI (see above). The Python side
+(`bug-bounty-agent/`, `local-ai-agent/`) has no automated tests or lint job
+yet.

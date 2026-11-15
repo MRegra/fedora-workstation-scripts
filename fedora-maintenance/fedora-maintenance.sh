@@ -29,6 +29,7 @@ MAINTENANCE_USER="${MAINTENANCE_USER:-${NOTIFY_USER:-}}"
 CURRENT_STEP=""
 MODE=""
 DRY_RUN=0                           # set by --dry-run: list pending actions, change nothing
+HEALTH_NOTE=""                      # set by post_maintenance_health_check; on_exit folds it into one notification
 
 log() {
   local msg="$1"
@@ -124,7 +125,14 @@ notify_user() {
 on_exit() {
   local rc="$?"
   if [[ "$rc" -eq 0 ]]; then
-    notify_user "ok" "Completed (${MODE})"
+    if [[ -n "$HEALTH_NOTE" ]]; then
+      # Fold the health-check outcome into the single final notification
+      # instead of sending it separately, so it can't be covered or replaced
+      # by a later "Completed" toast (F-2585 review).
+      notify_user "fail" "Maintenance ran (${MODE}); ${HEALTH_NOTE}"
+    else
+      notify_user "ok" "Completed (${MODE})"
+    fi
   else
     notify_user "fail" "Failed (${MODE}) - see ${LOG_FILE}"
   fi
@@ -182,8 +190,12 @@ check_updates_daily() {
     log "DRY-RUN: check for updates | cmd: dnf -y check-update --refresh"
     return 0
   fi
-  output="$(dnf -y check-update --refresh 2>&1)"
-  rc="$?"
+  # dnf check-update exits 100 when updates are available and that is the
+  # common case here, not a failure; capture rc with `|| rc=$?` so it never
+  # trips `set -e` (an unguarded failing command substitution would abort
+  # the whole script before the case below runs, see BashFAQ/105).
+  rc=0
+  output="$(dnf -y check-update --refresh 2>&1)" || rc="$?"
   printf '%s\n' "$output" >>"$LOG_FILE"
 
   case "$rc" in
@@ -361,9 +373,15 @@ cleanup_system() {
   if command_exists dnf; then
     step "Prune old kernels (keep ${KEEP_KERNELS})"
     local output rc old_kernels
+    # Same reason as check_updates_daily/maybe_reboot_hint/
+    # post_maintenance_health_check above: capture rc with `|| rc=$?` so a
+    # nonzero repoquery exit (no installonly packages matched, a transient
+    # dnf error, ...) is handled by the `if` below instead of tripping
+    # `set -e` and aborting the run - cleanup_system runs before the gate in
+    # every mode (F-2585 review).
+    rc=0
     output="$(dnf -q repoquery --installonly --latest-limit="-${KEEP_KERNELS}" \
-      kernel kernel-core kernel-modules kernel-modules-extra 2>&1)"
-    rc="$?"
+      kernel kernel-core kernel-modules kernel-modules-extra 2>&1)" || rc="$?"
     printf '%s\n' "$output" >>"$LOG_FILE"
     if [[ "$rc" -ne 0 ]]; then
       say "  WARN (repoquery failed; see log: $LOG_FILE)"
@@ -395,6 +413,70 @@ cleanup_system() {
   fi
 }
 
+post_maintenance_health_check() {
+  # Echo of Bluefin's "automatic update + easy rollback if it looks wrong"
+  # trust model (F-2585): we can't roll back a dnf Workstation install, but we
+  # can run the health check right after a maintenance pass and escalate the
+  # final notification distinctly if memory/swap looks off.
+  #
+  # Lookup uses the module-level REPO_ROOT (line 7), which is already
+  # resolved with `readlink -f`, the same way pip_update_extended finds
+  # bug-bounty-agent/requirements.txt. A BASH_SOURCE-relative path here would
+  # break under the documented install: fedora-maintenance is installed as a
+  # symlink at /usr/local/bin/fedora-maintenance and run from there by the
+  # systemd units and cron, none of which resolve symlinks for us.
+  step "Post-maintenance health check"
+
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    say "  WOULD RUN: system-health-check --check-only"
+    log "DRY-RUN: post-maintenance health check | cmd: system-health-check --check-only"
+    return 0
+  fi
+
+  # Overridable so a test can isolate step 4 from a real workstation that has
+  # the documented /usr/local/bin/system-health-check symlink installed
+  # (F-2585 review).
+  local system_path="${HEALTH_CHECK_SYSTEM_PATH:-/usr/local/bin/system-health-check}"
+  local health_check=""
+  if [[ -n "${HEALTH_CHECK_CMD:-}" ]]; then
+    health_check="$HEALTH_CHECK_CMD"
+  elif [[ -f "${REPO_ROOT}/system-health/system-health-check.sh" ]]; then
+    health_check="${REPO_ROOT}/system-health/system-health-check.sh"
+  elif command_exists system-health-check; then
+    health_check="$(command -v system-health-check)"
+  elif [[ -f "$system_path" ]]; then
+    health_check="$system_path"
+  fi
+
+  if [[ -z "$health_check" ]] || [[ ! -f "$health_check" ]]; then
+    say "  SKIP (system-health-check not found)"
+    log "WARN: health check not run: system-health-check not found (checked \$HEALTH_CHECK_CMD, ${REPO_ROOT}/system-health/system-health-check.sh, PATH, ${system_path})"
+    HEALTH_NOTE="health check NOT run (system-health-check not found)"
+    return 0
+  fi
+
+  # Capture rc with `|| rc=$?` (same reason as check_updates_daily and
+  # maybe_reboot_hint above: an unguarded nonzero exit here would trip
+  # `set -e` and abort before the else-branch below ever ran). Exit 1 is the
+  # documented "pressure detected" signal; any other nonzero code means the
+  # health check itself errored (crashed, bad interpreter, ...), which is
+  # reported distinctly instead of being guessed as pressure (F-2585 review).
+  local reason rc=0
+  reason="$(bash "$health_check" --check-only 2>>"$LOG_FILE")" || rc="$?"
+  if [[ "$rc" -eq 0 ]]; then
+    ok
+    log "post-maintenance health check: no pressure detected"
+  elif [[ "$rc" -eq 1 ]]; then
+    say "  FLAGGED: ${reason:-pressure detected}"
+    log "post-maintenance health check flagged: ${reason:-pressure detected}"
+    HEALTH_NOTE="health check flagged: ${reason:-pressure detected}"
+  else
+    say "  ERROR (health check exited ${rc}, see log)"
+    log "post-maintenance health check errored: rc=${rc}"
+    HEALTH_NOTE="health check errored (rc=${rc})"
+  fi
+}
+
 maybe_reboot_hint() {
   # We won't force reboot automatically, but we'll detect if it's likely needed.
   local needs_cmd=""
@@ -412,8 +494,13 @@ maybe_reboot_hint() {
 
   if [[ -n "$needs_cmd" ]]; then
     local rc
-    $needs_cmd -r >/dev/null 2>&1
-    rc="$?"
+    # needs-restarting -r exits 1 when a reboot is recommended, which is the
+    # expected/common case right after a kernel or glibc update, not a
+    # failure; capture rc with `|| rc=$?` so it never trips `set -e` (an
+    # unguarded nonzero exit here would abort the whole script before the
+    # post-maintenance health-check gate below ever runs).
+    rc=0
+    $needs_cmd -r >/dev/null 2>&1 || rc="$?"
     step "Reboot recommendation"
     if [[ "$rc" -eq 1 ]]; then
       say "  RECOMMENDED (needs-restarting)"
@@ -552,6 +639,7 @@ main() {
   case "$mode" in
     daily)
       daily_mode
+      post_maintenance_health_check
       ;;
     monthly)
       dnf_update_daily
@@ -559,6 +647,7 @@ main() {
       flatpak_update
       cleanup_system
       maybe_reboot_hint
+      post_maintenance_health_check
       ;;
     major)
       # Do a normal update + cleanup first, then upgrade.
@@ -577,6 +666,7 @@ main() {
       ollama_update_extended
       cleanup_system
       maybe_reboot_hint
+      post_maintenance_health_check
       ;;
     *)
       usage
@@ -587,10 +677,11 @@ main() {
   log "========== END: mode=${mode} =========="
 }
 
-# Guarded so scripts/test-dry-run.sh and
-# scripts/test-fedora-maintenance-daily.sh can `source` this file (to stub
-# functions/env like LOG_FILE and unit-test daily_mode/check_updates_daily
-# with faked dnf/notify_user) without running main() for real.
+# Guarded so scripts/test-health-check-gate.sh, scripts/test-dry-run.sh and
+# scripts/test-fedora-maintenance-daily.sh can `source` this file and call
+# its functions directly (e.g. post_maintenance_health_check, daily_mode,
+# check_updates_daily with faked dnf/notify_user, or stub env/functions like
+# LOG_FILE) without running the full privileged main() flow.
 if [[ "${BASH_SOURCE[0]:-}" == "${0}" ]]; then
   main "$@"
 fi

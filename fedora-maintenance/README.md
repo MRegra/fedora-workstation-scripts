@@ -259,4 +259,23 @@ sudo UPDATE_PIP=1 UPDATE_OLLAMA=1 MAINTENANCE_USER=mregra fedora-maintenance ext
 - Log retention defaults to 30 days of rotated logs. Set `LOG_DAYS=0` to disable cleanup.
 - Journal retention defaults to 7 days. Set `JOURNAL_DAYS=0` to disable cleanup.
 - Desktop notifications are optional: set `NOTIFY_USER=yourusername` in the unit and keep a GUI session active.
+- `daily`, `monthly` and `extended` runs end with a post-maintenance health
+  check (`system-health-check.sh --check-only`, F-2585): a quick echo of
+  "rollback if it looks wrong" for a traditional dnf Workstation that has no
+  OS-level rollback. `major` skips this step since it reboots immediately
+  after. The script is found symlink-safely, in order: `$HEALTH_CHECK_CMD`
+  (test override), the repo copy at `system-health/system-health-check.sh`
+  (resolved via the maintenance script's own `readlink -f`'d location, so it
+  works through the documented `/usr/local/bin/fedora-maintenance` symlink
+  and from systemd/cron), `system-health-check` on `PATH`, then the
+  documented `/usr/local/bin/system-health-check` symlink (needed because
+  cron's default `PATH` has neither). If swap/RAM pressure is flagged right
+  after a maintenance run, you get a distinctly-worded final notification
+  ("Maintenance ran (daily); health check flagged: ...") instead of the
+  normal "Completed" one, so you know a maintenance run — not just
+  background use — pushed the pressure up. If no health check can be found
+  at all, that's just as loud: a `WARN: health check not run` line in the
+  log and a "Maintenance ran (daily); health check NOT run (system-health-check
+  not found)" notification — never a silent skip. Either way the gate is
+  advisory: it never changes the run's exit code.
 - `extended` mode's pip/Ollama steps are opt-in (see above); plain `daily`/`monthly`/`major` never touch them.
