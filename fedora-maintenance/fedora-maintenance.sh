@@ -217,6 +217,33 @@ cleanup_system() {
   fi
 }
 
+post_maintenance_health_check() {
+  # Echo of Bluefin's "automatic update + easy rollback if it looks wrong"
+  # trust model (F-2585): we can't roll back a dnf Workstation install, but we
+  # can run the health check right after a maintenance pass and escalate the
+  # notification distinctly if memory/swap looks off.
+  local script_dir health_check reason
+
+  script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  health_check="${script_dir}/../system-health/system-health-check.sh"
+
+  step "Post-maintenance health check"
+  if [[ ! -x "$health_check" ]]; then
+    say "  SKIP (system-health-check.sh not found at $health_check)"
+    log "health check skipped: $health_check not found or not executable"
+    return 0
+  fi
+
+  if reason="$("$health_check" --check-only 2>>"$LOG_FILE")"; then
+    ok
+    log "post-maintenance health check: no pressure detected"
+  else
+    say "  FLAGGED: ${reason:-pressure detected}"
+    log "post-maintenance health check flagged: ${reason:-pressure detected}"
+    notify_user "fail" "Maintenance ran (${MODE}); health check flagged: ${reason:-pressure detected}"
+  fi
+}
+
 maybe_reboot_hint() {
   # We won't force reboot automatically, but we'll detect if it's likely needed.
   local needs_cmd=""
@@ -341,6 +368,7 @@ main() {
       flatpak_update
       cleanup_system
       maybe_reboot_hint
+      post_maintenance_health_check
       ;;
     monthly)
       dnf_update_daily
@@ -348,6 +376,7 @@ main() {
       flatpak_update
       cleanup_system
       maybe_reboot_hint
+      post_maintenance_health_check
       ;;
     major)
       # Do a normal update + cleanup first, then upgrade.
@@ -365,4 +394,9 @@ main() {
   log "========== END: mode=${mode} =========="
 }
 
-main "$@"
+# Guarded so scripts/test-health-check-gate.sh can `source` this file and
+# call its functions (e.g. post_maintenance_health_check) directly without
+# running the full privileged main() flow.
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  main "$@"
+fi

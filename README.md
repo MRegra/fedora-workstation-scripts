@@ -9,7 +9,9 @@ details. `soft-reboot/` and `system-audit/` are self-documenting via `--help`
 
 ## Projects
 
-- `fedora-maintenance/`: system updates, cleanup, firmware, and major upgrades
+- `fedora-maintenance/`: system updates, cleanup, firmware, and major upgrades;
+  `daily`/`monthly` end with a post-maintenance run of `system-health/system-health-check.sh`
+  that notifies distinctly if it flags swap/RAM pressure (F-2585)
 - `system-health/`: lightweight memory pressure warning
 - `soft-reboot/`: replicates common reboot cleanup effects without rebooting (`sudo soft-reboot/soft-reboot.sh`)
 - `system-audit/`: read-only security + performance audit with PASS/WARN/ALERT output and baseline diffing (`system-audit/system-audit.sh [--save-baseline]`)
@@ -69,7 +71,9 @@ labels `self-hosted, Linux, X64, home`) rather than GitHub-hosted runners — se
   It also runs every `*.sh` outside `scripts/` with `--help` (no `sudo`, no side
   effects). A script whose source never mentions `--help` is reported and not
   run. `scripts/test-smoke-selftest.sh` proves the smoke test goes red on each
-  of those failures.
+  of those failures. `scripts/test-health-check-gate.sh` (F-2585) proves
+  `fedora-maintenance.sh daily|monthly` runs `system-health-check.sh --check-only`
+  at the end and notifies distinctly when it flags swap/RAM pressure.
 
 Every runnable script therefore supports `--help`. When you move a script,
 update its README symlink line in the same change. When you add a mode to
@@ -79,7 +83,15 @@ locally with:
 ```bash
 bash scripts/test-smoke.sh
 bash scripts/test-smoke-selftest.sh
+bash scripts/test-health-check-gate.sh
 ```
+
+`scripts/test-health-check-gate.sh` is the regression guard for F-2585: it
+proves `fedora-maintenance.sh`'s `daily`/`monthly` modes call
+`system-health-check.sh --check-only` at the end of the run and notify
+distinctly from system-health-check's own hourly notification when it flags
+swap/RAM pressure, using a faked `free` so it never depends on this
+machine's real memory/swap state.
 
 ## Operating the scripts
 

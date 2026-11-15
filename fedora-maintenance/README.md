@@ -184,3 +184,11 @@ Add:
 - Log retention defaults to 30 days of rotated logs. Set `LOG_DAYS=0` to disable cleanup.
 - Journal retention defaults to 7 days. Set `JOURNAL_DAYS=0` to disable cleanup.
 - Desktop notifications are optional: set `NOTIFY_USER=yourusername` in the unit and keep a GUI session active.
+- `daily` and `monthly` runs end with a post-maintenance health check
+  (`../system-health/system-health-check.sh --check-only`, F-2585): a quick
+  echo of "rollback if it looks wrong" for a traditional dnf Workstation that
+  has no OS-level rollback. If swap/RAM pressure is flagged right after a
+  maintenance run, you get a distinctly-worded notification ("Maintenance ran
+  (daily); health check flagged: ...") instead of the normal hourly health
+  warning, so you know a maintenance run — not just background use — pushed
+  the pressure up. `major` skips this step since it reboots immediately after.

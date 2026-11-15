@@ -7,6 +7,14 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `fedora-maintenance.sh`: `daily`/`monthly` now run `system-health-check.sh
+  --check-only` at the end of the run and send a distinctly-worded
+  notification ("Maintenance ran (...); health check flagged: ...") if it
+  flags swap/RAM pressure, separate from system-health-check's own hourly
+  warning. A cheap echo of Bluefin's "automatic update + easy rollback if it
+  looks wrong" trust model on a traditional dnf Workstation that has no
+  OS-level rollback. New regression test: `scripts/test-health-check-gate.sh`
+  (F-2585, issue #14).
 - `renovate/default.json`: shared Renovate preset other repos extend
   (`github>MRegra/fedora-workstation-scripts//renovate/default`). Weekly
   grouped non-major PRs per ecosystem, one PR per major update, immediate
