@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # Modes accepted by main(); scripts/test-smoke.sh checks README ExecStart lines against it.
-# smoke-modes: daily monthly major
+# smoke-modes: daily monthly major extended
 set -Eeuo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 LOG_FILE="${LOG_FILE:-/var/log/fedora-maintenance.log}"
 KEEP_KERNELS="${KEEP_KERNELS:-3}"   # override: KEEP_KERNELS=2 ./fedora-maintenance.sh monthly
@@ -13,8 +16,20 @@ NOTIFY_USER="${NOTIFY_USER:-}"      # desktop notification target username (opti
 # old unattended-install behavior. Only the `daily` mode is affected.
 AUTO_INSTALL="${AUTO_INSTALL:-0}"
 
+# extended mode only (opt-in, each independently toggleable: default off so
+# `extended` without overrides stays a dry documented no-op for these two steps):
+UPDATE_PIP="${UPDATE_PIP:-0}"        # 1 = upgrade bug-bounty-agent's pip --user deps
+UPDATE_OLLAMA="${UPDATE_OLLAMA:-0}"  # 1 = re-pull every locally installed Ollama model
+# user whose `pip install --user` environment to upgrade (pip runs as root
+# otherwise, installing into /root instead of the desktop account). Falls
+# back to NOTIFY_USER since on this single-user workstation it's the same
+# account; override explicitly if that ever changes.
+MAINTENANCE_USER="${MAINTENANCE_USER:-${NOTIFY_USER:-}}"
+
 CURRENT_STEP=""
 MODE=""
+DRY_RUN=0                           # set by --dry-run: list pending actions, change nothing
+HEALTH_NOTE=""                      # set by post_maintenance_health_check; on_exit folds it into one notification
 
 log() {
   local msg="$1"
@@ -110,7 +125,14 @@ notify_user() {
 on_exit() {
   local rc="$?"
   if [[ "$rc" -eq 0 ]]; then
-    notify_user "ok" "Completed (${MODE})"
+    if [[ -n "$HEALTH_NOTE" ]]; then
+      # Fold the health-check outcome into the single final notification
+      # instead of sending it separately, so it can't be covered or replaced
+      # by a later "Completed" toast (F-2585 review).
+      notify_user "fail" "Maintenance ran (${MODE}); ${HEALTH_NOTE}"
+    else
+      notify_user "ok" "Completed (${MODE})"
+    fi
   else
     notify_user "fail" "Failed (${MODE}) - see ${LOG_FILE}"
   fi
@@ -120,6 +142,11 @@ run_cmd_required() {
   local desc="$1"
   shift
   step "$desc"
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    say "  WOULD RUN: $*"
+    log "DRY-RUN: $desc | cmd: $*"
+    return 0
+  fi
   if "$@" >>"$LOG_FILE" 2>&1; then
     ok
   else
@@ -133,6 +160,11 @@ run_cmd_optional() {
   local desc="$1"
   shift
   step "$desc"
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    say "  WOULD RUN: $*"
+    log "DRY-RUN: $desc | cmd: $*"
+    return 0
+  fi
   if "$@" >>"$LOG_FILE" 2>&1; then
     ok
   else
@@ -152,6 +184,12 @@ dnf_update_daily() {
 check_updates_daily() {
   step "Check for updates (notify-only; set AUTO_INSTALL=1 to install unattended)"
   local output rc pkg_lines pkg_count summary
+  # --dry-run: no metadata refresh and no desktop notification either.
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    say "  WOULD RUN: dnf -y check-update --refresh (and notify if updates are available)"
+    log "DRY-RUN: check for updates | cmd: dnf -y check-update --refresh"
+    return 0
+  fi
   output="$(dnf -y check-update --refresh 2>&1)"
   rc="$?"
   printf '%s\n' "$output" >>"$LOG_FILE"
@@ -218,6 +256,99 @@ firmware_update_monthly() {
   fi
 }
 
+pip_update_extended() {
+  if [[ "$UPDATE_PIP" != "1" ]]; then
+    step "Pip update (bug-bounty-agent)"
+    say "  SKIP (disabled; set UPDATE_PIP=1 to enable)"
+    log "pip update skipped: UPDATE_PIP not 1"
+    return 0
+  fi
+
+  local req_file="${REPO_ROOT}/bug-bounty-agent/requirements.txt"
+  if [[ ! -f "$req_file" ]]; then
+    step "Pip update (bug-bounty-agent)"
+    say "  SKIP (requirements.txt not found: $req_file)"
+    log "bug-bounty-agent/requirements.txt not found at ${req_file}; skipping pip update"
+    return 0
+  fi
+
+  if ! command_exists pip3; then
+    step "Pip update (bug-bounty-agent)"
+    say "  SKIP (pip3 not found)"
+    log "pip3 not found; skipping pip update"
+    return 0
+  fi
+
+  if [[ -z "$MAINTENANCE_USER" ]]; then
+    step "Pip update (bug-bounty-agent)"
+    say "  SKIP (MAINTENANCE_USER/NOTIFY_USER not set)"
+    log "MAINTENANCE_USER and NOTIFY_USER both unset; skipping pip update (would otherwise install into /root's pip --user site)"
+    return 0
+  fi
+
+  if ! id "$MAINTENANCE_USER" >/dev/null 2>&1; then
+    step "Pip update (bug-bounty-agent)"
+    say "  SKIP (user not found: $MAINTENANCE_USER)"
+    log "MAINTENANCE_USER '${MAINTENANCE_USER}' not found; skipping pip update"
+    return 0
+  fi
+
+  run_cmd_optional "Pip update (bug-bounty-agent, user: ${MAINTENANCE_USER})" \
+    runuser -u "$MAINTENANCE_USER" -- pip3 install --user --upgrade -r "$req_file"
+
+  # requirements.txt pins playwright with no upper bound, so an upgrade can
+  # move it to a release that expects a newer Chromium build than the one
+  # already cached under the user's ~/.cache/ms-playwright. install-tools.sh
+  # always pairs the pip install with this command (see its "Playwright
+  # browser" step); do the same here so the browser phase doesn't go stale.
+  if grep -q '^playwright' "$req_file"; then
+    run_cmd_optional "Playwright browser update (bug-bounty-agent, user: ${MAINTENANCE_USER})" \
+      runuser -u "$MAINTENANCE_USER" -- python3 -m playwright install chromium
+  fi
+}
+
+ollama_update_extended() {
+  if [[ "$UPDATE_OLLAMA" != "1" ]]; then
+    step "Ollama model update (local-ai-agent)"
+    say "  SKIP (disabled; set UPDATE_OLLAMA=1 to enable)"
+    log "ollama model update skipped: UPDATE_OLLAMA not 1"
+    return 0
+  fi
+
+  if ! command_exists ollama; then
+    step "Ollama model update (local-ai-agent)"
+    say "  SKIP (ollama not found)"
+    log "ollama not found; skipping model update"
+    return 0
+  fi
+
+  # `ollama pull` talks to the local daemon's API; it doesn't matter which
+  # user runs the CLI, so this can run as root like the other steps.
+  local list_output list_rc=0
+  list_output="$(ollama list 2>>"$LOG_FILE")" || list_rc="$?"
+  if [[ "$list_rc" -ne 0 ]]; then
+    step "Ollama model update (local-ai-agent)"
+    say "  SKIP (ollama list failed; daemon not running? see log: $LOG_FILE)"
+    log "ollama list exited ${list_rc}; skipping model update (daemon down or OLLAMA_HOST unreachable?)"
+    return 0
+  fi
+
+  local models
+  models="$(printf '%s\n' "$list_output" | awk 'NR>1 && NF{print $1}')"
+  if [[ -z "$models" ]]; then
+    step "Ollama model update (local-ai-agent)"
+    say "  SKIP (no local models installed)"
+    log "no ollama models found via 'ollama list'; skipping model update"
+    return 0
+  fi
+
+  local model
+  while IFS= read -r model; do
+    [[ -n "$model" ]] || continue
+    run_cmd_optional "Pull latest Ollama model: ${model}" ollama pull "$model"
+  done <<<"$models"
+}
+
 cleanup_system() {
   run_cmd_optional "DNF autoremove" dnf -y autoremove
   run_cmd_optional "DNF clean all" dnf -y clean all
@@ -250,6 +381,10 @@ cleanup_system() {
       if [[ -z "$old_kernels" ]]; then
         say "  OK (nothing to remove)"
         log "No old kernels to remove"
+      elif [[ "$DRY_RUN" -eq 1 ]]; then
+        # shellcheck disable=SC2086  # intentional word splitting, see dnf -y remove below
+        say "  WOULD REMOVE: $(printf '%s ' $old_kernels)"
+        log "DRY-RUN: would remove old kernels: ${old_kernels}"
       else
         # shellcheck disable=SC2086  # intentional word splitting: a space/newline
         # separated list of kernel package names must expand to multiple args.
@@ -272,26 +407,48 @@ post_maintenance_health_check() {
   # Echo of Bluefin's "automatic update + easy rollback if it looks wrong"
   # trust model (F-2585): we can't roll back a dnf Workstation install, but we
   # can run the health check right after a maintenance pass and escalate the
-  # notification distinctly if memory/swap looks off.
-  local script_dir health_check reason
-
-  script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-  health_check="${script_dir}/../system-health/system-health-check.sh"
-
+  # final notification distinctly if memory/swap looks off.
+  #
+  # Lookup uses the module-level REPO_ROOT (line 7), which is already
+  # resolved with `readlink -f`, the same way pip_update_extended finds
+  # bug-bounty-agent/requirements.txt. A BASH_SOURCE-relative path here would
+  # break under the documented install: fedora-maintenance is installed as a
+  # symlink at /usr/local/bin/fedora-maintenance and run from there by the
+  # systemd units and cron, none of which resolve symlinks for us.
   step "Post-maintenance health check"
-  if [[ ! -x "$health_check" ]]; then
-    say "  SKIP (system-health-check.sh not found at $health_check)"
-    log "health check skipped: $health_check not found or not executable"
+
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    say "  WOULD RUN: system-health-check --check-only"
+    log "DRY-RUN: post-maintenance health check | cmd: system-health-check --check-only"
     return 0
   fi
 
-  if reason="$("$health_check" --check-only 2>>"$LOG_FILE")"; then
+  local health_check=""
+  if [[ -n "${HEALTH_CHECK_CMD:-}" ]]; then
+    health_check="$HEALTH_CHECK_CMD"
+  elif [[ -f "${REPO_ROOT}/system-health/system-health-check.sh" ]]; then
+    health_check="${REPO_ROOT}/system-health/system-health-check.sh"
+  elif command_exists system-health-check; then
+    health_check="$(command -v system-health-check)"
+  elif [[ -f /usr/local/bin/system-health-check ]]; then
+    health_check="/usr/local/bin/system-health-check"
+  fi
+
+  if [[ -z "$health_check" ]] || [[ ! -f "$health_check" ]]; then
+    say "  SKIP (system-health-check not found)"
+    log "WARN: health check not run: system-health-check not found (checked \$HEALTH_CHECK_CMD, ${REPO_ROOT}/system-health/system-health-check.sh, PATH, /usr/local/bin/system-health-check)"
+    HEALTH_NOTE="health check NOT run (system-health-check not found)"
+    return 0
+  fi
+
+  local reason
+  if reason="$(bash "$health_check" --check-only 2>>"$LOG_FILE")"; then
     ok
     log "post-maintenance health check: no pressure detected"
   else
     say "  FLAGGED: ${reason:-pressure detected}"
     log "post-maintenance health check flagged: ${reason:-pressure detected}"
-    notify_user "fail" "Maintenance ran (${MODE}); health check flagged: ${reason:-pressure detected}"
+    HEALTH_NOTE="health check flagged: ${reason:-pressure detected}"
   fi
 }
 
@@ -349,6 +506,11 @@ major_version_upgrade() {
     dnf -y system-upgrade download --releasever="${target_ver}" --allowerasing
 
   step "Reboot into upgrade environment"
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    say "  WOULD RUN: dnf -y system-upgrade reboot (system would reboot now)"
+    log "DRY-RUN: would trigger reboot into system upgrade environment"
+    return 0
+  fi
   say "  NOTE: System will reboot now if this succeeds."
   log "Triggering reboot into system upgrade environment"
   dnf -y system-upgrade reboot >>"$LOG_FILE" 2>&1
@@ -374,22 +536,37 @@ usage() {
 Fedora Maintenance Script
 
 Usage:
-  sudo $0 daily
-  sudo $0 monthly
-  sudo $0 major
+  sudo $0 daily [--dry-run]
+  sudo $0 monthly [--dry-run]
+  sudo $0 major [--dry-run]
+  sudo $0 extended [--dry-run]
 
 Modes:
-  daily   - notify-only by default: lists available updates + cleanup (set
-            AUTO_INSTALL=1 to install them unattended, the old behavior)
-  monthly - daily (unattended install) + firmware updates (fwupdmgr) + cleanup
-  major   - major Fedora version upgrade (assumes next version) + cleanup beforehand
+  daily    - notify-only by default: lists available updates + cleanup (set
+             AUTO_INSTALL=1 to install them unattended, the old behavior)
+  monthly  - daily (unattended install) + firmware updates (fwupdmgr) + cleanup
+  major    - major Fedora version upgrade (assumes next version) + cleanup beforehand
+  extended - monthly (dnf + firmware + flatpak) + opt-in pip update
+             (bug-bounty-agent) + opt-in Ollama model update (local-ai-agent)
+             + cleanup. Each extra step is off by default; enable with
+             UPDATE_PIP=1 / UPDATE_OLLAMA=1.
+
+Flags:
+  --dry-run   List the dnf/flatpak/firmware/kernel-prune/upgrade actions this
+              mode would take, without running any of them. Exits 0. No
+              package install/remove/update, no firmware flash, no reboot.
+              The log file is still created/rotated the same way a real
+              run's is (see Log below).
 
 Env vars:
-  AUTO_INSTALL=1    Install daily updates unattended instead of notify-only (default: 0)
-  KEEP_KERNELS=3    How many kernels to keep when pruning old ones (default: 3)
-  LOG_DAYS=30       How many days to keep rotated logs (0 disables cleanup)
-  JOURNAL_DAYS=7    Journal retention in days (0 disables cleanup)
-  NOTIFY_USER=you   Desktop notification target (optional)
+  AUTO_INSTALL=1      Install daily updates unattended instead of notify-only (default: 0)
+  KEEP_KERNELS=3      How many kernels to keep when pruning old ones (default: 3)
+  LOG_DAYS=30         How many days to keep rotated logs (0 disables cleanup)
+  JOURNAL_DAYS=7      Journal retention in days (0 disables cleanup)
+  NOTIFY_USER=you     Desktop notification target (optional)
+  UPDATE_PIP=1        extended mode: upgrade bug-bounty-agent's pip --user deps (default: 0)
+  UPDATE_OLLAMA=1     extended mode: re-pull every locally installed Ollama model (default: 0)
+  MAINTENANCE_USER=you  User whose pip --user environment to upgrade (default: NOTIFY_USER)
 
 Log:
   $LOG_FILE
@@ -397,13 +574,22 @@ EOF
 }
 
 main() {
-  local mode="${1:-}"
+  local mode="" arg
+  for arg in "$@"; do
+    case "$arg" in
+      -h | --help | help)
+        usage
+        exit 0
+        ;;
+      --dry-run)
+        DRY_RUN=1
+        ;;
+      *)
+        [[ -z "$mode" ]] && mode="$arg"
+        ;;
+    esac
+  done
   [[ -n "$mode" ]] || { usage; exit 1; }
-
-  if [[ "$mode" == "-h" || "$mode" == "--help" || "$mode" == "help" ]]; then
-    usage
-    exit 0
-  fi
 
   MODE="$mode"
   need_root "$@"
@@ -411,8 +597,13 @@ main() {
   manage_logs
   trap on_exit EXIT
 
-  say "Fedora maintenance: mode=${mode}"
-  log "========== START: mode=${mode} =========="
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    say "Fedora maintenance: mode=${mode} (dry run, nothing will be changed)"
+    log "========== START: mode=${mode} dry-run=1 =========="
+  else
+    say "Fedora maintenance: mode=${mode}"
+    log "========== START: mode=${mode} =========="
+  fi
   log "Host: $(hostname) | Fedora: $(cat /etc/fedora-release 2>/dev/null || true) | Kernel: $(uname -r)"
 
   case "$mode" in
@@ -435,6 +626,18 @@ main() {
       cleanup_system
       major_version_upgrade
       ;;
+    extended)
+      # monthly (dnf + firmware + flatpak), plus the owner's other dev-stack
+      # ecosystems (opt-in, see usage()).
+      dnf_update_daily
+      firmware_update_monthly
+      flatpak_update
+      pip_update_extended
+      ollama_update_extended
+      cleanup_system
+      maybe_reboot_hint
+      post_maintenance_health_check
+      ;;
     *)
       usage
       exit 1
@@ -444,11 +647,11 @@ main() {
   log "========== END: mode=${mode} =========="
 }
 
-# Guarded so scripts/test-health-check-gate.sh and
+# Guarded so scripts/test-health-check-gate.sh, scripts/test-dry-run.sh and
 # scripts/test-fedora-maintenance-daily.sh can `source` this file and call
 # its functions directly (e.g. post_maintenance_health_check, daily_mode,
-# check_updates_daily with faked dnf/notify_user) without running the full
-# privileged main() flow.
+# check_updates_daily with faked dnf/notify_user, or stub env/functions like
+# LOG_FILE) without running the full privileged main() flow.
 if [[ "${BASH_SOURCE[0]:-}" == "${0}" ]]; then
   main "$@"
 fi

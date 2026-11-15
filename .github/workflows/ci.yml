@@ -129,3 +129,5 @@ jobs:
         run: bash scripts/test-smoke.sh
       - name: Health check gate test (F-2585)
         run: bash scripts/test-health-check-gate.sh
+      - name: Dry-run regression test (F-2583; no sudo/root needed)
+        run: bash scripts/test-dry-run.sh

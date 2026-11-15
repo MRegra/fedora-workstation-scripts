@@ -12,6 +12,9 @@ Automate routine Fedora maintenance with safe defaults:
   typically triggered by hand or a scheduled maintenance window).
 - Optional Flatpak maintenance, firmware updates, cleanup, major version
   upgrade
+- Optional (`extended` mode): pip updates for `bug-bounty-agent` and Ollama
+  model updates for `local-ai-agent` — the other dev-stack ecosystems this
+  repo already runs, kept out of the default `daily`/`monthly` path
 
 ## Requirements
 
@@ -20,6 +23,8 @@ Automate routine Fedora maintenance with safe defaults:
 - Optional: `dnf-plugins-core` for `needs-restarting` and `repoquery`
 - Optional: `flatpak` for Flatpak maintenance
 - Optional: `libnotify` for desktop notifications
+- Optional (`extended` mode): `pip3` for the bug-bounty-agent pip update step,
+  `ollama` for the Ollama model update step
 
 Install optional tools:
 
@@ -58,7 +63,30 @@ Ensure `~/.local/bin` is on your `PATH` if you use the user-local symlink.
 sudo fedora-maintenance daily
 sudo fedora-maintenance monthly
 sudo fedora-maintenance major
+
+# opt-in: monthly (dnf + firmware + flatpak) + this repo's other ecosystems (off by default, see below)
+sudo UPDATE_PIP=1 UPDATE_OLLAMA=1 fedora-maintenance extended
 ```
+
+### Preview mode (`--dry-run`)
+
+Add `--dry-run` to any mode to see what it would do without changing
+anything:
+
+```bash
+sudo fedora-maintenance daily --dry-run
+sudo fedora-maintenance monthly --dry-run
+sudo fedora-maintenance major --dry-run
+sudo fedora-maintenance extended --dry-run
+```
+
+This lists the pending dnf/flatpak/firmware actions (package updates,
+flatpak updates, kernel pruning, and for `major`, the Fedora version-upgrade
+download and reboot) without installing, removing, updating or rebooting
+anything, and exits `0`. Useful before `major`, since that upgrade path
+reboots the machine and is not easily reversible. Still requires `sudo`
+(the log is written the same way a real run's is), but no package, firmware
+or kernel state is touched.
 
 Logs:
 
@@ -182,9 +210,44 @@ Add:
 0 9 1 * * /usr/local/bin/fedora-maintenance monthly
 ```
 
+## Extended mode (pip + Ollama)
+
+`extended` runs the same steps as `monthly` (dnf + firmware + flatpak), plus two opt-in steps for the
+other dev-stack ecosystems this repo already runs — `bug-bounty-agent`
+(pip) and `local-ai-agent` (Ollama). Each is off by default and toggled
+independently:
+
+- `UPDATE_PIP=1` — runs `pip3 install --user --upgrade -r bug-bounty-agent/requirements.txt`
+  as `MAINTENANCE_USER` (default: `NOTIFY_USER`). It must run as that user,
+  not root, or the packages land in `/root`'s `pip --user` site instead of
+  the desktop account's. If neither is set, the step is skipped and logged.
+  requirements.txt has no upper bound on `playwright`, and every Playwright
+  release pins its own Chromium build, so when `requirements.txt` pins
+  `playwright`, this step also runs `python3 -m playwright install chromium`
+  as the same user right after the pip upgrade — the same pairing
+  `install-tools.sh` does on first install — so an upgraded Playwright isn't
+  left pointing at a Chromium build that's no longer cached.
+- `UPDATE_OLLAMA=1` — runs `ollama pull <model>` for every model already
+  present (`ollama list`), to fetch newer digests. Runs as whichever user
+  invokes the script, since `ollama pull` only talks to the local daemon's
+  API; model storage belongs to the `ollama` service, not the caller. If
+  `ollama list` itself fails (e.g. the daemon isn't running), that's logged
+  as its own `SKIP` distinct from "no local models installed".
+
+Both steps log the same way as the existing ones (`- <step>` / `OK` / `WARN`
+to stdout and `$LOG_FILE`) and never fail the run: a missing `pip3`/`ollama`,
+an unset `MAINTENANCE_USER`, an unreachable Ollama daemon, or no local Ollama
+models are all a logged `SKIP`, not an error.
+
+```bash
+sudo UPDATE_PIP=1 UPDATE_OLLAMA=1 MAINTENANCE_USER=mregra fedora-maintenance extended
+```
+
 ## Notes
 
 - The script refuses to run without root.
+- `--dry-run` lists pending actions for any mode without changing the
+  system; exits `0`.
 - `daily` is notify-only by default: it lists available updates (via `dnf
   check-update`) and sends a desktop notification instead of installing
   them. Set `AUTO_INSTALL=1` (e.g. `Environment=AUTO_INSTALL=1` in the
@@ -196,11 +259,23 @@ Add:
 - Log retention defaults to 30 days of rotated logs. Set `LOG_DAYS=0` to disable cleanup.
 - Journal retention defaults to 7 days. Set `JOURNAL_DAYS=0` to disable cleanup.
 - Desktop notifications are optional: set `NOTIFY_USER=yourusername` in the unit and keep a GUI session active.
-- `daily` and `monthly` runs end with a post-maintenance health check
-  (`../system-health/system-health-check.sh --check-only`, F-2585): a quick
-  echo of "rollback if it looks wrong" for a traditional dnf Workstation that
-  has no OS-level rollback. If swap/RAM pressure is flagged right after a
-  maintenance run, you get a distinctly-worded notification ("Maintenance ran
-  (daily); health check flagged: ...") instead of the normal hourly health
-  warning, so you know a maintenance run — not just background use — pushed
-  the pressure up. `major` skips this step since it reboots immediately after.
+- `daily`, `monthly` and `extended` runs end with a post-maintenance health
+  check (`system-health-check.sh --check-only`, F-2585): a quick echo of
+  "rollback if it looks wrong" for a traditional dnf Workstation that has no
+  OS-level rollback. `major` skips this step since it reboots immediately
+  after. The script is found symlink-safely, in order: `$HEALTH_CHECK_CMD`
+  (test override), the repo copy at `system-health/system-health-check.sh`
+  (resolved via the maintenance script's own `readlink -f`'d location, so it
+  works through the documented `/usr/local/bin/fedora-maintenance` symlink
+  and from systemd/cron), `system-health-check` on `PATH`, then the
+  documented `/usr/local/bin/system-health-check` symlink (needed because
+  cron's default `PATH` has neither). If swap/RAM pressure is flagged right
+  after a maintenance run, you get a distinctly-worded final notification
+  ("Maintenance ran (daily); health check flagged: ...") instead of the
+  normal "Completed" one, so you know a maintenance run — not just
+  background use — pushed the pressure up. If no health check can be found
+  at all, that's just as loud: a `WARN: health check not run` line in the
+  log and a "Maintenance ran (daily); health check NOT run (system-health-check
+  not found)" notification — never a silent skip. Either way the gate is
+  advisory: it never changes the run's exit code.
+- `extended` mode's pip/Ollama steps are opt-in (see above); plain `daily`/`monthly`/`major` never touch them.

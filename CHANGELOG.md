@@ -7,14 +7,39 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
-- `fedora-maintenance.sh`: `daily`/`monthly` now run `system-health-check.sh
-  --check-only` at the end of the run and send a distinctly-worded
-  notification ("Maintenance ran (...); health check flagged: ...") if it
-  flags swap/RAM pressure, separate from system-health-check's own hourly
-  warning. A cheap echo of Bluefin's "automatic update + easy rollback if it
-  looks wrong" trust model on a traditional dnf Workstation that has no
-  OS-level rollback. New regression test: `scripts/test-health-check-gate.sh`
-  (F-2585, issue #14).
+- `fedora-maintenance.sh`: `daily`/`monthly`/`extended` (not `major`, which
+  reboots) now run `system-health-check.sh --check-only` at the end of the
+  run and fold the result into exactly one final notification — a
+  distinctly-worded "Maintenance ran (...); health check flagged: ..." (or
+  "...; health check NOT run (system-health-check not found)" if the script
+  can't be found at all) in place of the normal "Completed" message — never
+  a second notification stacked on top. The script is resolved
+  symlink-safely (`$HEALTH_CHECK_CMD` override, then the repo copy via the
+  maintenance script's own `readlink -f`'d `REPO_ROOT`, then `PATH`, then the
+  documented `/usr/local/bin/system-health-check` symlink), so the gate still
+  works through the documented `/usr/local/bin/fedora-maintenance` install
+  that systemd/cron actually use. A missing health check is always logged
+  loudly (`WARN: health check not run: ...`), never a silent skip. The gate
+  is advisory and never changes the run's exit code. A cheap echo of
+  Bluefin's "automatic update + easy rollback if it looks wrong" trust model
+  on a traditional dnf Workstation that has no OS-level rollback. New
+  regression test: `scripts/test-health-check-gate.sh` (F-2585, issue #14).
+- `fedora-maintenance.sh`: `--dry-run` flag for `daily`/`monthly`/`major`/`extended`.
+  Lists the pending dnf/flatpak/firmware/kernel-prune actions (and, for
+  `major`, the system-upgrade download/reboot steps) without running any of
+  them, and exits 0. Regression test: `scripts/test-dry-run.sh`, run by the
+  `smoke` CI job on every push/PR. (#12)
+- `fedora-maintenance.sh extended` mode: opt-in steps that update the other
+  dev-stack ecosystems this repo already runs — `pip3 install --user
+  --upgrade` for `bug-bounty-agent`'s deps (`UPDATE_PIP=1`) and `ollama pull`
+  for every locally installed model used by `local-ai-agent` (`UPDATE_OLLAMA=1`).
+  Both are off by default, independently toggleable, and logged the same way
+  as the existing dnf/flatpak/firmware steps. The pip step also re-runs
+  `python3 -m playwright install chromium` as the same user when
+  `requirements.txt` pins `playwright`, so a Playwright upgrade doesn't leave
+  `bug-bounty-agent`'s browser phase pointing at a Chromium build that's no
+  longer cached. The Ollama step distinguishes "daemon unreachable" from "no
+  local models" in its `SKIP` log. (#15)
 - `fedora-maintenance.sh daily` now defaults to notify-only: it lists
   available DNF updates via a desktop notification instead of installing
   them, per Fedora's own guidance that a single workstation should default

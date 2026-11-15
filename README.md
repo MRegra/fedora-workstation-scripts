@@ -72,8 +72,15 @@ labels `self-hosted, Linux, X64, home`) rather than GitHub-hosted runners — se
   effects). A script whose source never mentions `--help` is reported and not
   run. `scripts/test-smoke-selftest.sh` proves the smoke test goes red on each
   of those failures. `scripts/test-health-check-gate.sh` (F-2585) proves
-  `fedora-maintenance.sh daily|monthly` runs `system-health-check.sh --check-only`
-  at the end and notifies distinctly when it flags swap/RAM pressure.
+  `fedora-maintenance.sh daily|monthly|extended` runs `system-health-check.sh
+  --check-only` at the end, resolved symlink-safely, and notifies distinctly
+  when it flags swap/RAM pressure or can't find the health check at all.
+- **dry-run regression test** (`scripts/test-dry-run.sh`) — sources
+  `fedora-maintenance.sh` with `dnf`/`flatpak`/`fwupdmgr` stubbed on `PATH`
+  and proves that `daily`/`monthly`/`major` under `DRY_RUN=1` never invoke a
+  mutating command (including `major`'s `dnf -y system-upgrade reboot`
+  trigger), while the same actions under `DRY_RUN=0` do invoke the stubs —
+  so the test isn't vacuous. No root/sudo needed.
 
 Every runnable script therefore supports `--help`. When you move a script,
 update its README symlink line in the same change. When you add a mode to
@@ -84,14 +91,18 @@ locally with:
 bash scripts/test-smoke.sh
 bash scripts/test-smoke-selftest.sh
 bash scripts/test-health-check-gate.sh
+bash scripts/test-dry-run.sh
 ```
 
 `scripts/test-health-check-gate.sh` is the regression guard for F-2585: it
-proves `fedora-maintenance.sh`'s `daily`/`monthly` modes call
-`system-health-check.sh --check-only` at the end of the run and notify
-distinctly from system-health-check's own hourly notification when it flags
-swap/RAM pressure, using a faked `free` so it never depends on this
-machine's real memory/swap state.
+proves `fedora-maintenance.sh`'s `daily`/`monthly`/`extended` modes (not
+`major`, which reboots) call `system-health-check.sh --check-only` at the end
+of the run, that the health check is found through the documented symlink
+install (not just a direct repo checkout) via `REPO_ROOT` / `PATH` /
+`/usr/local/bin/system-health-check`, and that the run notifies distinctly
+from system-health-check's own hourly notification when it flags swap/RAM
+pressure or when the health check can't be found at all, using a faked
+`free` so it never depends on this machine's real memory/swap state.
 
 ## Operating the scripts
 
