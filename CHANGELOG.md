@@ -7,6 +7,12 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `fedora-maintenance.sh daily` now defaults to notify-only: it lists
+  available DNF updates via a desktop notification instead of installing
+  them, per Fedora's own guidance that a single workstation should default
+  to notify/download-only. Set `AUTO_INSTALL=1` to restore the previous
+  unattended-install behavior for `daily`. `monthly`/`major` are unchanged.
+  (F-2584)
 - `renovate/default.json`: shared Renovate preset other repos extend
   (`github>MRegra/fedora-workstation-scripts//renovate/default`). Weekly
   grouped non-major PRs per ecosystem, one PR per major update, immediate
