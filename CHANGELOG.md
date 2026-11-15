@@ -12,7 +12,18 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   --upgrade` for `bug-bounty-agent`'s deps (`UPDATE_PIP=1`) and `ollama pull`
   for every locally installed model used by `local-ai-agent` (`UPDATE_OLLAMA=1`).
   Both are off by default, independently toggleable, and logged the same way
-  as the existing dnf/flatpak/firmware steps. (#15)
+  as the existing dnf/flatpak/firmware steps. The pip step also re-runs
+  `python3 -m playwright install chromium` as the same user when
+  `requirements.txt` pins `playwright`, so a Playwright upgrade doesn't leave
+  `bug-bounty-agent`'s browser phase pointing at a Chromium build that's no
+  longer cached. The Ollama step distinguishes "daemon unreachable" from "no
+  local models" in its `SKIP` log. (#15)
+- `fedora-maintenance.sh daily` now defaults to notify-only: it lists
+  available DNF updates via a desktop notification instead of installing
+  them, per Fedora's own guidance that a single workstation should default
+  to notify/download-only. Set `AUTO_INSTALL=1` to restore the previous
+  unattended-install behavior for `daily`. `monthly`/`major` are unchanged.
+  (F-2584)
 - `renovate/default.json`: shared Renovate preset other repos extend
   (`github>MRegra/fedora-workstation-scripts//renovate/default`). Weekly
   grouped non-major PRs per ecosystem, one PR per major update, immediate

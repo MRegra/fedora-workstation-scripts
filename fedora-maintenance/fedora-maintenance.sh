@@ -6,11 +6,15 @@ set -Eeuo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-LOG_FILE="/var/log/fedora-maintenance.log"
+LOG_FILE="${LOG_FILE:-/var/log/fedora-maintenance.log}"
 KEEP_KERNELS="${KEEP_KERNELS:-3}"   # override: KEEP_KERNELS=2 ./fedora-maintenance.sh monthly
 LOG_DAYS="${LOG_DAYS:-30}"          # keep rotated logs for N days (0 disables cleanup)
 JOURNAL_DAYS="${JOURNAL_DAYS:-7}"   # journal retention in days (0 disables cleanup)
 NOTIFY_USER="${NOTIFY_USER:-}"      # desktop notification target username (optional)
+# Daily runs default to notify-only (list updates, install nothing) per
+# Fedora's own guidance for a single workstation; AUTO_INSTALL=1 restores the
+# old unattended-install behavior. Only the `daily` mode is affected.
+AUTO_INSTALL="${AUTO_INSTALL:-0}"
 
 # extended mode only (opt-in, each independently toggleable: default off so
 # `extended` without overrides stays a dry documented no-op for these two steps):
@@ -155,6 +159,53 @@ dnf_update_daily() {
   run_cmd_required "DNF upgrade (refresh)" dnf -y upgrade --refresh
 }
 
+# Notify-only path for the default (AUTO_INSTALL=0) daily run: list available
+# updates without installing anything. `dnf check-update` exits 0 (no
+# updates), 100 (updates available) or 1+ (error) - 100 is not a failure here.
+check_updates_daily() {
+  step "Check for updates (notify-only; set AUTO_INSTALL=1 to install unattended)"
+  local output rc pkg_lines pkg_count summary
+  output="$(dnf -y check-update --refresh 2>&1)"
+  rc="$?"
+  printf '%s\n' "$output" >>"$LOG_FILE"
+
+  case "$rc" in
+    0)
+      ok
+      say "  No updates available"
+      log "No updates available"
+      ;;
+    100)
+      ok
+      pkg_lines="$(printf '%s\n' "$output" | awk 'NF && $1 ~ /^[A-Za-z0-9]/ {print $1}')"
+      pkg_count="$(printf '%s\n' "$pkg_lines" | sed '/^$/d' | wc -l | tr -d ' ')"
+      say "  ${pkg_count} update(s) available (not installed; set AUTO_INSTALL=1 to install unattended)"
+      log "${pkg_count} update(s) available: $(printf '%s\n' "$pkg_lines" | tr '\n' ' ')"
+      summary="$(printf '%s\n' "$pkg_lines" | head -n 10 | paste -sd ',' - | sed 's/,/, /g')"
+      [[ "$pkg_count" -gt 10 ]] && summary="${summary}, and $((pkg_count - 10)) more"
+      notify_user "ok" "${pkg_count} update(s) available: ${summary}. Run with AUTO_INSTALL=1 to install unattended, or update manually."
+      ;;
+    *)
+      say "  FAILED (see log: $LOG_FILE)"
+      log "FAILED: dnf check-update exited ${rc}"
+      return 1
+      ;;
+  esac
+}
+
+# Entry point for the `daily` mode: AUTO_INSTALL=1 restores the old
+# unattended install behavior; the default is notify-only.
+daily_mode() {
+  if [[ "$AUTO_INSTALL" == "1" ]]; then
+    dnf_update_daily
+    flatpak_update
+  else
+    check_updates_daily
+  fi
+  cleanup_system
+  maybe_reboot_hint
+}
+
 flatpak_update() {
   if command_exists flatpak; then
     run_cmd_optional "Flatpak update" flatpak -y update
@@ -219,6 +270,16 @@ pip_update_extended() {
 
   run_cmd_optional "Pip update (bug-bounty-agent, user: ${MAINTENANCE_USER})" \
     runuser -u "$MAINTENANCE_USER" -- pip3 install --user --upgrade -r "$req_file"
+
+  # requirements.txt pins playwright with no upper bound, so an upgrade can
+  # move it to a release that expects a newer Chromium build than the one
+  # already cached under the user's ~/.cache/ms-playwright. install-tools.sh
+  # always pairs the pip install with this command (see its "Playwright
+  # browser" step); do the same here so the browser phase doesn't go stale.
+  if grep -q '^playwright' "$req_file"; then
+    run_cmd_optional "Playwright browser update (bug-bounty-agent, user: ${MAINTENANCE_USER})" \
+      runuser -u "$MAINTENANCE_USER" -- python3 -m playwright install chromium
+  fi
 }
 
 ollama_update_extended() {
@@ -238,8 +299,17 @@ ollama_update_extended() {
 
   # `ollama pull` talks to the local daemon's API; it doesn't matter which
   # user runs the CLI, so this can run as root like the other steps.
+  local list_output list_rc=0
+  list_output="$(ollama list 2>>"$LOG_FILE")" || list_rc="$?"
+  if [[ "$list_rc" -ne 0 ]]; then
+    step "Ollama model update (local-ai-agent)"
+    say "  SKIP (ollama list failed; daemon not running? see log: $LOG_FILE)"
+    log "ollama list exited ${list_rc}; skipping model update (daemon down or OLLAMA_HOST unreachable?)"
+    return 0
+  fi
+
   local models
-  models="$(ollama list 2>>"$LOG_FILE" | awk 'NR>1 && NF{print $1}')" || models=""
+  models="$(printf '%s\n' "$list_output" | awk 'NR>1 && NF{print $1}')"
   if [[ -z "$models" ]]; then
     step "Ollama model update (local-ai-agent)"
     say "  SKIP (no local models installed)"
@@ -389,8 +459,9 @@ Usage:
   sudo $0 extended
 
 Modes:
-  daily    - dnf upgrade --refresh + flatpak + cleanup
-  monthly  - daily + firmware updates (fwupdmgr) + cleanup
+  daily    - notify-only by default: lists available updates + cleanup (set
+             AUTO_INSTALL=1 to install them unattended, the old behavior)
+  monthly  - daily (unattended install) + firmware updates (fwupdmgr) + cleanup
   major    - major Fedora version upgrade (assumes next version) + cleanup beforehand
   extended - monthly (dnf + firmware + flatpak) + opt-in pip update
              (bug-bounty-agent) + opt-in Ollama model update (local-ai-agent)
@@ -398,6 +469,7 @@ Modes:
              UPDATE_PIP=1 / UPDATE_OLLAMA=1.
 
 Env vars:
+  AUTO_INSTALL=1      Install daily updates unattended instead of notify-only (default: 0)
   KEEP_KERNELS=3      How many kernels to keep when pruning old ones (default: 3)
   LOG_DAYS=30         How many days to keep rotated logs (0 disables cleanup)
   JOURNAL_DAYS=7      Journal retention in days (0 disables cleanup)
@@ -432,10 +504,7 @@ main() {
 
   case "$mode" in
     daily)
-      dnf_update_daily
-      flatpak_update
-      cleanup_system
-      maybe_reboot_hint
+      daily_mode
       ;;
     monthly)
       dnf_update_daily
@@ -471,4 +540,9 @@ main() {
   log "========== END: mode=${mode} =========="
 }
 
-main "$@"
+# Guarded so scripts/test-fedora-maintenance-daily.sh can `source` this file
+# (to unit-test daily_mode/check_updates_daily with faked dnf/notify_user)
+# without running main() for real.
+if [[ "${BASH_SOURCE[0]:-}" == "${0}" ]]; then
+  main "$@"
+fi

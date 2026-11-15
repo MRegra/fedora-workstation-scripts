@@ -2,10 +2,16 @@
 
 Automate routine Fedora maintenance with safe defaults:
 
-- DNF updates and cleanup
-- Optional Flatpak maintenance
-- Optional firmware updates
-- Optional major version upgrade
+- `daily` defaults to **notify-only**: lists available DNF updates via a
+  desktop notification instead of installing them (set `AUTO_INSTALL=1` for
+  the old unattended-install behavior). This follows [Fedora's own
+  guidance](https://docs.fedoraproject.org/en/quick-docs/autoupdates/) that a
+  single workstation should default to notify/download-only, with a human
+  reviewing before install.
+- `monthly`/`major` still install unattended (they run less often and are
+  typically triggered by hand or a scheduled maintenance window).
+- Optional Flatpak maintenance, firmware updates, cleanup, major version
+  upgrade
 - Optional (`extended` mode): pip updates for `bug-bounty-agent` and Ollama
   model updates for `local-ai-agent` — the other dev-stack ecosystems this
   repo already runs, kept out of the default `daily`/`monthly` path
@@ -195,15 +201,23 @@ independently:
   as `MAINTENANCE_USER` (default: `NOTIFY_USER`). It must run as that user,
   not root, or the packages land in `/root`'s `pip --user` site instead of
   the desktop account's. If neither is set, the step is skipped and logged.
+  requirements.txt has no upper bound on `playwright`, and every Playwright
+  release pins its own Chromium build, so when `requirements.txt` pins
+  `playwright`, this step also runs `python3 -m playwright install chromium`
+  as the same user right after the pip upgrade — the same pairing
+  `install-tools.sh` does on first install — so an upgraded Playwright isn't
+  left pointing at a Chromium build that's no longer cached.
 - `UPDATE_OLLAMA=1` — runs `ollama pull <model>` for every model already
   present (`ollama list`), to fetch newer digests. Runs as whichever user
   invokes the script, since `ollama pull` only talks to the local daemon's
-  API; model storage belongs to the `ollama` service, not the caller.
+  API; model storage belongs to the `ollama` service, not the caller. If
+  `ollama list` itself fails (e.g. the daemon isn't running), that's logged
+  as its own `SKIP` distinct from "no local models installed".
 
 Both steps log the same way as the existing ones (`- <step>` / `OK` / `WARN`
 to stdout and `$LOG_FILE`) and never fail the run: a missing `pip3`/`ollama`,
-an unset `MAINTENANCE_USER`, or no local Ollama models are a logged `SKIP`,
-not an error.
+an unset `MAINTENANCE_USER`, an unreachable Ollama daemon, or no local Ollama
+models are all a logged `SKIP`, not an error.
 
 ```bash
 sudo UPDATE_PIP=1 UPDATE_OLLAMA=1 MAINTENANCE_USER=mregra fedora-maintenance extended
@@ -212,6 +226,12 @@ sudo UPDATE_PIP=1 UPDATE_OLLAMA=1 MAINTENANCE_USER=mregra fedora-maintenance ext
 ## Notes
 
 - The script refuses to run without root.
+- `daily` is notify-only by default: it lists available updates (via `dnf
+  check-update`) and sends a desktop notification instead of installing
+  them. Set `AUTO_INSTALL=1` (e.g. `Environment=AUTO_INSTALL=1` in the
+  systemd unit, or `AUTO_INSTALL=1 sudo fedora-maintenance daily`) to restore
+  unattended installs for `daily`. `monthly` and `major` are unaffected and
+  always install.
 - Major upgrade uses the next Fedora version by default.
 - Change how many kernels to keep with `KEEP_KERNELS=2` (or another value).
 - Log retention defaults to 30 days of rotated logs. Set `LOG_DAYS=0` to disable cleanup.
