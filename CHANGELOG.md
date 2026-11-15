@@ -7,6 +7,12 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `fedora-maintenance.sh extended` mode: opt-in steps that update the other
+  dev-stack ecosystems this repo already runs — `pip3 install --user
+  --upgrade` for `bug-bounty-agent`'s deps (`UPDATE_PIP=1`) and `ollama pull`
+  for every locally installed model used by `local-ai-agent` (`UPDATE_OLLAMA=1`).
+  Both are off by default, independently toggleable, and logged the same way
+  as the existing dnf/flatpak/firmware steps. (#15)
 - `renovate/default.json`: shared Renovate preset other repos extend
   (`github>MRegra/fedora-workstation-scripts//renovate/default`). Weekly
   grouped non-major PRs per ecosystem, one PR per major update, immediate
