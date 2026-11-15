@@ -54,6 +54,25 @@ sudo fedora-maintenance monthly
 sudo fedora-maintenance major
 ```
 
+### Preview mode (`--dry-run`)
+
+Add `--dry-run` to any mode to see what it would do without changing
+anything:
+
+```bash
+sudo fedora-maintenance daily --dry-run
+sudo fedora-maintenance monthly --dry-run
+sudo fedora-maintenance major --dry-run
+```
+
+This lists the pending dnf/flatpak/firmware actions (package updates,
+flatpak updates, kernel pruning, and for `major`, the Fedora version-upgrade
+download and reboot) without installing, removing, updating or rebooting
+anything, and exits `0`. Useful before `major`, since that upgrade path
+reboots the machine and is not easily reversible. Still requires `sudo`
+(the log is written the same way a real run's is), but no package, firmware
+or kernel state is touched.
+
 Logs:
 
 ```bash
@@ -179,6 +198,8 @@ Add:
 ## Notes
 
 - The script refuses to run without root.
+- `--dry-run` lists pending actions for any mode without changing the
+  system; exits `0`.
 - Major upgrade uses the next Fedora version by default.
 - Change how many kernels to keep with `KEEP_KERNELS=2` (or another value).
 - Log retention defaults to 30 days of rotated logs. Set `LOG_DAYS=0` to disable cleanup.

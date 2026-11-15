@@ -7,6 +7,10 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `fedora-maintenance.sh`: `--dry-run` flag for `daily`/`monthly`/`major`.
+  Lists the pending dnf/flatpak/firmware/kernel-prune actions (and, for
+  `major`, the system-upgrade download/reboot steps) without running any of
+  them, and exits 0. Regression test: `scripts/test-dry-run.sh`. (#12)
 - `renovate/default.json`: shared Renovate preset other repos extend
   (`github>MRegra/fedora-workstation-scripts//renovate/default`). Weekly
   grouped non-major PRs per ecosystem, one PR per major update, immediate

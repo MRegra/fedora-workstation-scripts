@@ -3,7 +3,7 @@
 # smoke-modes: daily monthly major
 set -Eeuo pipefail
 
-LOG_FILE="/var/log/fedora-maintenance.log"
+LOG_FILE="${LOG_FILE:-/var/log/fedora-maintenance.log}"
 KEEP_KERNELS="${KEEP_KERNELS:-3}"   # override: KEEP_KERNELS=2 ./fedora-maintenance.sh monthly
 LOG_DAYS="${LOG_DAYS:-30}"          # keep rotated logs for N days (0 disables cleanup)
 JOURNAL_DAYS="${JOURNAL_DAYS:-7}"   # journal retention in days (0 disables cleanup)
@@ -11,6 +11,7 @@ NOTIFY_USER="${NOTIFY_USER:-}"      # desktop notification target username (opti
 
 CURRENT_STEP=""
 MODE=""
+DRY_RUN=0                           # set by --dry-run: list pending actions, change nothing
 
 log() {
   local msg="$1"
@@ -116,6 +117,11 @@ run_cmd_required() {
   local desc="$1"
   shift
   step "$desc"
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    say "  WOULD RUN: $*"
+    log "DRY-RUN: $desc | cmd: $*"
+    return 0
+  fi
   if "$@" >>"$LOG_FILE" 2>&1; then
     ok
   else
@@ -129,6 +135,11 @@ run_cmd_optional() {
   local desc="$1"
   shift
   step "$desc"
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    say "  WOULD RUN: $*"
+    log "DRY-RUN: $desc | cmd: $*"
+    return 0
+  fi
   if "$@" >>"$LOG_FILE" 2>&1; then
     ok
   else
@@ -199,6 +210,10 @@ cleanup_system() {
       if [[ -z "$old_kernels" ]]; then
         say "  OK (nothing to remove)"
         log "No old kernels to remove"
+      elif [[ "$DRY_RUN" -eq 1 ]]; then
+        # shellcheck disable=SC2086  # intentional word splitting, see dnf -y remove below
+        say "  WOULD REMOVE: $(printf '%s ' $old_kernels)"
+        log "DRY-RUN: would remove old kernels: ${old_kernels}"
       else
         # shellcheck disable=SC2086  # intentional word splitting: a space/newline
         # separated list of kernel package names must expand to multiple args.
@@ -271,6 +286,11 @@ major_version_upgrade() {
     dnf -y system-upgrade download --releasever="${target_ver}" --allowerasing
 
   step "Reboot into upgrade environment"
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    say "  WOULD RUN: dnf -y system-upgrade reboot (system would reboot now)"
+    log "DRY-RUN: would trigger reboot into system upgrade environment"
+    return 0
+  fi
   say "  NOTE: System will reboot now if this succeeds."
   log "Triggering reboot into system upgrade environment"
   dnf -y system-upgrade reboot >>"$LOG_FILE" 2>&1
@@ -296,14 +316,20 @@ usage() {
 Fedora Maintenance Script
 
 Usage:
-  sudo $0 daily
-  sudo $0 monthly
-  sudo $0 major
+  sudo $0 daily [--dry-run]
+  sudo $0 monthly [--dry-run]
+  sudo $0 major [--dry-run]
 
 Modes:
   daily   - dnf upgrade --refresh + flatpak + cleanup
   monthly - daily + firmware updates (fwupdmgr) + cleanup
   major   - major Fedora version upgrade (assumes next version) + cleanup beforehand
+
+Flags:
+  --dry-run   List the dnf/flatpak/firmware/kernel-prune/upgrade actions this
+              mode would take, without running any of them. Exits 0. Nothing
+              on the system is modified (no package install/remove/update, no
+              firmware flash, no reboot).
 
 Env vars:
   KEEP_KERNELS=3    How many kernels to keep when pruning old ones (default: 3)
@@ -317,13 +343,22 @@ EOF
 }
 
 main() {
-  local mode="${1:-}"
+  local mode="" arg
+  for arg in "$@"; do
+    case "$arg" in
+      -h | --help | help)
+        usage
+        exit 0
+        ;;
+      --dry-run)
+        DRY_RUN=1
+        ;;
+      *)
+        [[ -z "$mode" ]] && mode="$arg"
+        ;;
+    esac
+  done
   [[ -n "$mode" ]] || { usage; exit 1; }
-
-  if [[ "$mode" == "-h" || "$mode" == "--help" || "$mode" == "help" ]]; then
-    usage
-    exit 0
-  fi
 
   MODE="$mode"
   need_root "$@"
@@ -331,8 +366,13 @@ main() {
   manage_logs
   trap on_exit EXIT
 
-  say "Fedora maintenance: mode=${mode}"
-  log "========== START: mode=${mode} =========="
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    say "Fedora maintenance: mode=${mode} (dry run, nothing will be changed)"
+    log "========== START: mode=${mode} dry-run=1 =========="
+  else
+    say "Fedora maintenance: mode=${mode}"
+    log "========== START: mode=${mode} =========="
+  fi
   log "Host: $(hostname) | Fedora: $(cat /etc/fedora-release 2>/dev/null || true) | Kernel: $(uname -r)"
 
   case "$mode" in
@@ -365,4 +405,8 @@ main() {
   log "========== END: mode=${mode} =========="
 }
 
-main "$@"
+# Guarded so scripts/test-dry-run.sh can `source` this file (to stub
+# functions and env like LOG_FILE) without triggering a real run.
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  main "$@"
+fi
